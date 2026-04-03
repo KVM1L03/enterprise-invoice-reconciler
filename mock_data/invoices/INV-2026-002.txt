@@ -1,0 +1,42 @@
+================================================================================
+INVOICE
+================================================================================
+
+Invoice Number:      INV-2026-002
+Invoice Date:        2026-03-18
+Due Date:            2026-04-18
+
+Bill To:
+TechFlow Solutions Inc
+789 Innovation Way
+Boston, MA 02101
+USA
+
+From:
+DataPipe Analytics
+321 Tech Boulevard
+Austin, TX 78701
+USA
+
+================================================================================
+LINE ITEMS
+================================================================================
+
+Description                                    Quantity  Unit Price    Amount
+─────────────────────────────────────────────────────────────────────────────
+Real-time Analytics Platform - Annual         1         $8,000.00     $8,000.00
+Custom Integration Module (dev hours)         120       $150.00       $18,000.00
+Data Storage: 500GB/month (3 months)          3         $1,500.00     $4,500.00
+API Calls: 10M/month overage                  1         $2,000.00     $2,000.00
+Professional Services Consultation            40        $200.00       $8,000.00
+
+================================================================================
+SUMMARY
+================================================================================
+
+Subtotal:                                                           $40,500.00
+Tax (8.5%):                                                         $3,442.50
+Total Amount Due:                                                   $43,942.50
+
+Payment Terms: Net 45
+Status: Issued
