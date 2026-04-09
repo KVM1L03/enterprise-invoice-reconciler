@@ -1,6 +1,5 @@
 """FastAPI gateway — triggers Temporal batch reconciliation workflows."""
 
-import asyncio
 import logging
 import os
 import uuid
@@ -43,31 +42,30 @@ app.add_middleware(
 @app.post("/reconcile-batch", status_code=202)
 async def reconcile_batch(request: Request) -> dict:
     """Fire-and-forget: start a batch reconciliation workflow."""
-    invoice_texts: list[str] = []
-    invoice_files = sorted(INVOICES_DIR.glob("*.txt"))
+    invoice_files = sorted(INVOICES_DIR.glob("*.pdf"))
 
     if not invoice_files:
         raise HTTPException(
             status_code=404,
-            detail="No invoice files found in mock_data/invoices/",
+            detail="No PDF invoice files found in mock_data/invoices/",
         )
 
-    for path in invoice_files:
-        content = await asyncio.to_thread(path.read_text)
-        invoice_texts.append(content)
+    # Pass ABSOLUTE PATHS (strings), not file contents — keeps Temporal
+    # Event History small and lets the Activity do the I/O.
+    file_paths: list[str] = [str(p) for p in invoice_files]
 
     workflow_id = f"batch-{uuid.uuid4()}"
     client: Client = request.app.state.temporal_client
 
     await client.start_workflow(
         "BatchReconciliationWorkflow",
-        args=[invoice_texts],
+        args=[file_paths],
         id=workflow_id,
         task_queue=TASK_QUEUE,
     )
 
     logger.info(
-        "Started workflow %s with %d invoices", workflow_id, len(invoice_texts)
+        "Started workflow %s with %d PDF invoices", workflow_id, len(file_paths)
     )
     return {"message": "Batch processing started", "workflow_id": workflow_id}
 

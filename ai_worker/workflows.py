@@ -17,14 +17,14 @@ class BatchReconciliationWorkflow:
     """Orchestrates concurrent reconciliation of a batch of invoices."""
 
     @workflow.run
-    async def run(self, invoices: list[str]) -> dict:
+    async def run(self, file_paths: list[str]) -> dict:
         """Process all invoices concurrently via Temporal Activities."""
         tasks: list = []
-        for invoice_text in invoices:
+        for file_path in file_paths:
             tasks.append(
                 workflow.execute_activity(
                     process_invoice_activity,
-                    args=[invoice_text],
+                    args=[file_path],
                     start_to_close_timeout=timedelta(minutes=5),
                     retry_policy=RECONCILIATION_RETRY_POLICY,
                 )

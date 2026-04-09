@@ -66,6 +66,9 @@ services:
       - TEMPORAL_ADDRESS=temporal:7233
     ports:
       - "8000:8000"
+    volumes:
+      # Live invoice PDFs / fixtures from host — no image rebuild when files change
+      - ./mock_data:/app/mock_data:ro
     networks:
       - temporal-net
 
@@ -77,6 +80,8 @@ services:
     env_file: .env
     environment:
       - TEMPORAL_ADDRESS=temporal:7233
+    volumes:
+      - ./mock_data:/app/mock_data:ro
     networks:
       - temporal-net
 
