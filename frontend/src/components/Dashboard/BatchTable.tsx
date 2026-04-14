@@ -6,8 +6,6 @@ import {
   FileText,
   Inbox,
   Loader2,
-  Search,
-  SlidersHorizontal,
   Trash2,
 } from "lucide-react";
 
@@ -276,8 +274,10 @@ export function BatchTable({
                 {Object.keys(result).length !== 1 ? "s" : ""}
               </span>
             )}
+            {/* TODO: Wire up batch results filter and search (UI placeholders only for now).
             <SlidersHorizontal className="h-4 w-4 text-slate-400 cursor-pointer hover:text-[#00502e] transition-colors" />
             <Search className="h-4 w-4 text-slate-400 cursor-pointer hover:text-[#00502e] transition-colors" />
+            */}
             <button
               type="button"
               onClick={onClearHistory}
