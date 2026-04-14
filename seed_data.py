@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import random
+import shutil
 import sqlite3
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -180,6 +182,36 @@ def write_invoice_pdf(path: Path, inv: InvoiceBuild) -> None:
     pdf.output(str(path))
 
 
+def _try_delete_mock_pdfs_via_docker() -> bool:
+    """Delete PDFs as root inside a one-shot container (fixes host EACCES on Docker-owned files)."""
+    if not shutil.which("docker"):
+        return False
+    rel = MOCK_DATA_DIR.relative_to(ROOT).as_posix()
+    try:
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "-v",
+                f"{ROOT}:/work",
+                "-w",
+                "/work",
+                "alpine:latest",
+                "sh",
+                "-c",
+                f'find {rel} -type f -name "*.pdf" -delete',
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return False
+    return True
+
+
 def clear_all_mock_data_pdfs() -> None:
     """Remove every *.pdf under mock_data/ (invoices, approved, discrepancy, etc.)."""
     if MOCK_DATA_DIR.is_dir():
@@ -194,14 +226,17 @@ def clear_all_mock_data_pdfs() -> None:
         if MOCK_DATA_DIR.is_dir()
         else []
     )
+    if remaining and _try_delete_mock_pdfs_via_docker():
+        print("  (PDF-y z mock_data usunięte przez docker run alpine — wcześniej niedostępne z hosta)")
+        remaining = [p for p in MOCK_DATA_DIR.rglob("*.pdf") if p.is_file()]
     if remaining:
         rel = MOCK_DATA_DIR.relative_to(ROOT)
         bad = "\n".join(f"  {p}" for p in remaining)
         raise RuntimeError(
             "Nie można usunąć niektórych PDF-ów (często właściciel root z kontenera Docker).\n"
-            "Napraw właściciela i uruchom ponownie:\n"
+            "Zainstaluj Docker i spróbuj ponownie, albo napraw właściciela:\n"
             f'  sudo chown -R "$USER:$USER" {rel}\n'
-            "Albo usuń z hosta przez kontener (root w kontenerze):\n"
+            "Albo ręcznie:\n"
             f'  docker run --rm -v "$PWD:/work" -w /work alpine:latest '
             f'sh -c \'find {rel} -type f -name "*.pdf" -delete\'\n'
             "Potem: uv run python seed_data.py\n"

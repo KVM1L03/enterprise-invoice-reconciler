@@ -13,10 +13,14 @@ import {
   FolderOpen,
   Search,
   SlidersHorizontal,
+  Eye,
+  Trash2,
 } from "lucide-react";
 import {
+  clearAllBatches,
   getDashboardStats,
   getRecentBatches,
+  overrideInvoiceStatus,
   saveBatchResult,
   type DashboardStats,
 } from "@/app/actions";
@@ -34,6 +38,7 @@ type RecentBatch = Awaited<ReturnType<typeof getRecentBatches>>[number];
 const CARD_SHADOW = "shadow-[0_12px_40px_rgba(25,28,30,0.04)]";
 
 type InvoiceResult = {
+  id?: string;
   invoice_id?: string;
   status: string;
   reason?: string;
@@ -42,6 +47,8 @@ type InvoiceResult = {
 };
 
 type WorkflowResult = Record<string, InvoiceResult>;
+
+type ReviewTarget = InvoiceResult & { id: string };
 
 type PollResponse = {
   status: string;
@@ -83,10 +90,12 @@ function KpiCard({ label, value, accent = "primary", footer }: KpiCardProps) {
 
 const STATUS_STYLES: Record<string, string> = {
   APPROVED: "bg-[#9df5bd] text-[#00522f]",
+  FORCE_APPROVED: "bg-[#9df5bd] text-[#00522f]",
   DISCREPANCY: "bg-[#ffdad6] text-[#93000a]",
   HUMAN_REVIEW_NEEDED: "bg-[#ffdad6] text-[#93000a]",
   SYSTEM_ERROR: "bg-[#ffdad6] text-[#93000a]",
   FAILED: "bg-[#ffdad6] text-[#93000a]",
+  REJECTED: "bg-[#ffdad6] text-[#93000a]",
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -102,7 +111,12 @@ function StatusBadge({ status }: { status: string }) {
 
 // ---------- Results Table (Editorial Ledger) ----------
 
-function ResultsTable({ result }: { result: WorkflowResult }) {
+type ResultsTableProps = {
+  result: WorkflowResult;
+  onReview?: (row: ReviewTarget) => void;
+};
+
+function ResultsTable({ result, onReview }: ResultsTableProps) {
   const rows = Object.entries(result);
   return (
     <div className="overflow-x-auto">
@@ -121,6 +135,11 @@ function ResultsTable({ result }: { result: WorkflowResult }) {
             <th className="px-6 py-3 text-[0.7rem] font-bold text-slate-500 uppercase tracking-wider">
               Reason
             </th>
+            {onReview && (
+              <th className="px-6 py-3 text-[0.7rem] font-bold text-slate-500 uppercase tracking-wider text-center">
+                Actions
+              </th>
+            )}
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-50">
@@ -162,6 +181,23 @@ function ResultsTable({ result }: { result: WorkflowResult }) {
                   <span className="text-slate-400 italic">—</span>
                 )}
               </td>
+              {onReview && (
+                <td className="px-6 py-4 text-center">
+                  {data.status === "DISCREPANCY" && data.id ? (
+                    <button
+                      onClick={() =>
+                        onReview({ ...data, id: data.id as string })
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-md bg-[#00502e] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-white hover:bg-[#006b3f] transition-colors"
+                    >
+                      <Eye className="h-3 w-3" />
+                      Review
+                    </button>
+                  ) : (
+                    <span className="text-slate-300">—</span>
+                  )}
+                </td>
+              )}
             </tr>
           ))}
         </tbody>
@@ -176,6 +212,7 @@ function batchToWorkflowResult(batch: RecentBatch): WorkflowResult {
   const result: WorkflowResult = {};
   batch.invoices.forEach((inv, idx) => {
     result[`invoice_${idx}`] = {
+      id: inv.id,
       invoice_id: inv.invoiceId,
       status: inv.status,
       reason: inv.reason || undefined,
@@ -185,7 +222,12 @@ function batchToWorkflowResult(batch: RecentBatch): WorkflowResult {
   return result;
 }
 
-function BatchHistoryList({ batches }: { batches: RecentBatch[] }) {
+type BatchHistoryListProps = {
+  batches: RecentBatch[];
+  onReview?: (row: ReviewTarget) => void;
+};
+
+function BatchHistoryList({ batches, onReview }: BatchHistoryListProps) {
   return (
     <div className="divide-y divide-slate-100">
       {batches.map((batch) => (
@@ -202,7 +244,10 @@ function BatchHistoryList({ batches }: { batches: RecentBatch[] }) {
             </div>
           </div>
           <div className="rounded-lg overflow-hidden border border-slate-100">
-            <ResultsTable result={batchToWorkflowResult(batch)} />
+            <ResultsTable
+              result={batchToWorkflowResult(batch)}
+              onReview={onReview}
+            />
           </div>
         </div>
       ))}
@@ -259,6 +304,127 @@ function EmptyState() {
   );
 }
 
+// ---------- Review Modal (Human-in-the-loop override) ----------
+
+type ReviewModalProps = {
+  target: ReviewTarget | null;
+  submitting: boolean;
+  error: string | null;
+  onClose: () => void;
+  onDecide: (decision: "FORCE_APPROVED" | "REJECTED") => void;
+};
+
+function ReviewModal({
+  target,
+  submitting,
+  error,
+  onClose,
+  onDecide,
+}: ReviewModalProps) {
+  if (!target) return null;
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start gap-3 mb-5">
+          <div className="rounded-lg bg-[#9df5bd] p-2 flex items-center justify-center">
+            <AlertTriangle className="h-5 w-5 text-[#00522f]" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-base font-semibold text-[#191c1e]">
+              Manual Review Required
+            </h3>
+            <p className="mt-0.5 text-xs text-[#3f4941]">
+              Override the AI decision for this invoice.
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-slate-400 hover:text-[#191c1e]"
+            aria-label="Close"
+          >
+            <XCircle className="h-5 w-5" />
+          </button>
+        </div>
+
+        <dl className="space-y-3 text-sm mb-6">
+          <div>
+            <dt className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+              Invoice ID
+            </dt>
+            <dd className="mt-1 font-mono text-[#191c1e]">
+              {target.invoice_id ?? "—"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+              Expected Amount
+            </dt>
+            <dd className="mt-1 font-mono text-[#191c1e]">
+              {target.erp_expected_amount != null
+                ? `$${target.erp_expected_amount.toLocaleString("en-US", {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}`
+                : "—"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+              AI Reasoning
+            </dt>
+            <dd className="mt-1 text-[#3f4941] leading-relaxed">
+              {target.reason ?? target.error ?? (
+                <span className="italic text-slate-400">
+                  No reason provided
+                </span>
+              )}
+            </dd>
+          </div>
+        </dl>
+
+        {error && (
+          <div className="mb-4 rounded-md bg-[#ffdad6] text-[#93000a] p-3 text-xs font-mono">
+            {error}
+          </div>
+        )}
+
+        <div className="flex gap-3">
+          <button
+            onClick={() => onDecide("FORCE_APPROVED")}
+            disabled={submitting}
+            className="flex-1 inline-flex items-center justify-center gap-2 rounded-md bg-gradient-to-r from-[#00502e] to-[#006b3f] px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+          >
+            {submitting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <CheckCircle2 className="h-4 w-4" />
+            )}
+            Force Approve
+          </button>
+          <button
+            onClick={() => onDecide("REJECTED")}
+            disabled={submitting}
+            className="flex-1 inline-flex items-center justify-center gap-2 rounded-md bg-[#ba1a1a] px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+          >
+            {submitting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <XCircle className="h-4 w-4" />
+            )}
+            Reject
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------- Main Dashboard ----------
 
 export default function DashboardPage() {
@@ -274,6 +440,9 @@ export default function DashboardPage() {
   const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(
     null,
   );
+  const [reviewTarget, setReviewTarget] = useState<ReviewTarget | null>(null);
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -301,6 +470,49 @@ export default function DashboardPage() {
     }
     setPolling(false);
   }, []);
+
+  const openReview = useCallback((row: ReviewTarget) => {
+    setReviewError(null);
+    setReviewTarget(row);
+  }, []);
+
+  const closeReview = useCallback(() => {
+    if (reviewSubmitting) return;
+    setReviewTarget(null);
+    setReviewError(null);
+  }, [reviewSubmitting]);
+
+  const handleClearHistory = useCallback(async () => {
+    if (
+      !window.confirm("Are you sure you want to clear all batch history?")
+    ) {
+      return;
+    }
+    const res = await clearAllBatches();
+    if (res.ok) {
+      setResult(null);
+      await reloadPersistedDashboard();
+    } else {
+      console.error("Failed to clear batch history:", res.error);
+    }
+  }, [reloadPersistedDashboard]);
+
+  const handleDecision = useCallback(
+    async (decision: "FORCE_APPROVED" | "REJECTED") => {
+      if (!reviewTarget) return;
+      setReviewSubmitting(true);
+      setReviewError(null);
+      const res = await overrideInvoiceStatus(reviewTarget.id, decision);
+      if (res.ok) {
+        setReviewTarget(null);
+        await reloadPersistedDashboard();
+      } else {
+        setReviewError(res.error ?? "Failed to update invoice");
+      }
+      setReviewSubmitting(false);
+    },
+    [reviewTarget, reloadPersistedDashboard],
+  );
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -392,6 +604,7 @@ export default function DashboardPage() {
             const saveRes = await saveBatchResult(workflowId, data.result);
             if (saveRes.ok) {
               await reloadPersistedDashboard();
+              setResult(null);
             } else {
               console.error("Failed to persist batch:", saveRes.error);
             }
@@ -521,6 +734,14 @@ export default function DashboardPage() {
             }
           />
         </section>
+
+        <ReviewModal
+          target={reviewTarget}
+          submitting={reviewSubmitting}
+          error={reviewError}
+          onClose={closeReview}
+          onDecide={handleDecision}
+        />
 
         {/* Main content — full width */}
         <section className="space-y-8">
@@ -676,13 +897,25 @@ export default function DashboardPage() {
                   )}
                   <SlidersHorizontal className="h-4 w-4 text-slate-400 cursor-pointer hover:text-[#00502e] transition-colors" />
                   <Search className="h-4 w-4 text-slate-400 cursor-pointer hover:text-[#00502e] transition-colors" />
+                  <button
+                    onClick={handleClearHistory}
+                    disabled={polling || recentBatches.length === 0}
+                    title="Clear batch history"
+                    className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-[#ba1a1a] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Clear History
+                  </button>
                 </div>
               </div>
 
               {polling && <LoadingSkeleton />}
               {!polling && result && <ResultsTable result={result} />}
               {!polling && !result && recentBatches.length > 0 && (
-                <BatchHistoryList batches={recentBatches} />
+                <BatchHistoryList
+                  batches={recentBatches}
+                  onReview={openReview}
+                />
               )}
               {!polling && !result && recentBatches.length === 0 && !error && (
                 <EmptyState />

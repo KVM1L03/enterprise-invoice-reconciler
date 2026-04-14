@@ -109,3 +109,41 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     pendingReviews,
   };
 }
+
+export type OverrideStatus = "FORCE_APPROVED" | "REJECTED";
+
+export type OverrideResponse = { ok: boolean; error?: string };
+
+export async function overrideInvoiceStatus(
+  invoiceId: string,
+  newStatus: OverrideStatus,
+): Promise<OverrideResponse> {
+  try {
+    await prisma.invoice.update({
+      where: { id: invoiceId },
+      data: { status: newStatus },
+    });
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Unknown DB error",
+    };
+  }
+}
+
+export async function clearAllBatches(): Promise<{
+  ok: boolean;
+  error?: string;
+}> {
+  try {
+    await prisma.invoice.deleteMany({});
+    await prisma.batch.deleteMany({});
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Unknown DB error",
+    };
+  }
+}
