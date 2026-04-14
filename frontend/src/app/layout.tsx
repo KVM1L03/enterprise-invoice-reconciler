@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "LedgerCore Enterprise — Invoice Reconciler",
+  title: "OmniAccountant — Invoice Reconciler",
   description: "Enterprise AI-powered invoice reconciliation dashboard",
 };
 
@@ -27,7 +27,7 @@ type NavItem = {
 
 const navItems: NavItem[] = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard, active: true },
-  { href: "/reports", label: "Reports", icon: BarChart3 },
+  { href: "/reports", label: "Reports", icon: BarChart3 }, // TODO: Add reports page
 ];
 
 export default function RootLayout({
@@ -52,7 +52,7 @@ export default function RootLayout({
                 </div>
                 <div>
                   <h2 className="text-[#00502e] font-bold text-sm leading-none tracking-tight">
-                    LedgerCore
+                  OmniAccountant
                   </h2>
                   <p className="text-[10px] text-slate-500 uppercase tracking-[0.15em] mt-1.5">
                     Financial Operations

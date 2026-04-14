@@ -1,22 +1,21 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import type {
+  DashboardStats,
+  OverrideResponse,
+  OverrideStatus,
+  SaveBatchResponse,
+  WorkflowResult,
+} from "@/types";
 
-type InvoiceResultPayload = {
-  invoice_id?: string;
-  status: string;
-  reason?: string;
-  erp_expected_amount?: number | null;
-  error?: string;
-};
-
-export type WorkflowResult = Record<string, InvoiceResultPayload>;
-
-export type SaveBatchResponse = {
-  ok: boolean;
-  batchId?: string;
-  error?: string;
-};
+export type {
+  DashboardStats,
+  OverrideResponse,
+  OverrideStatus,
+  SaveBatchResponse,
+  WorkflowResult,
+} from "@/types";
 
 export async function saveBatchResult(
   workflowId: string,
@@ -66,15 +65,6 @@ export async function getRecentBatches() {
   });
 }
 
-export type DashboardStats = {
-  batchCount: number;
-  totalInvoices: number;
-  approvedInvoices: number;
-  successRatePct: string;
-  pendingReviews: number;
-};
-
-/** Aggregate KPIs from all persisted batches (survives page refresh). */
 export async function getDashboardStats(): Promise<DashboardStats> {
   const [batchCount, grouped] = await Promise.all([
     prisma.batch.count(),
@@ -109,10 +99,6 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     pendingReviews,
   };
 }
-
-export type OverrideStatus = "FORCE_APPROVED" | "REJECTED";
-
-export type OverrideResponse = { ok: boolean; error?: string };
 
 export async function overrideInvoiceStatus(
   invoiceId: string,
