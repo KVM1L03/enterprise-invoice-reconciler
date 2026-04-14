@@ -10,7 +10,6 @@ import {
   Upload,
   Paperclip,
   FileText,
-  TrendingUp,
   FolderOpen,
   History,
   Search,
@@ -18,8 +17,16 @@ import {
   Activity,
   LifeBuoy,
 } from "lucide-react";
+import {
+  getDashboardStats,
+  getRecentBatches,
+  saveBatchResult,
+  type DashboardStats,
+} from "@/app/actions";
 
 const API = "http://localhost:8000";
+
+type RecentBatch = Awaited<ReturnType<typeof getRecentBatches>>[number];
 
 // ---------- Editorial Enterprise palette (Stitch "Corporate Dashboard Redesign") ----------
 // Primary: #00502e, primary-container: #006b3f, primary-fixed: #9df5bd
@@ -166,6 +173,46 @@ function ResultsTable({ result }: { result: WorkflowResult }) {
   );
 }
 
+// ---------- Batch History (persisted in Postgres via Prisma) ----------
+
+function batchToWorkflowResult(batch: RecentBatch): WorkflowResult {
+  const result: WorkflowResult = {};
+  batch.invoices.forEach((inv, idx) => {
+    result[`invoice_${idx}`] = {
+      invoice_id: inv.invoiceId,
+      status: inv.status,
+      reason: inv.reason || undefined,
+      erp_expected_amount: inv.expectedAmount,
+    };
+  });
+  return result;
+}
+
+function BatchHistoryList({ batches }: { batches: RecentBatch[] }) {
+  return (
+    <div className="divide-y divide-slate-100">
+      {batches.map((batch) => (
+        <div key={batch.id} className="px-6 py-5">
+          <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+            <div className="flex items-center gap-3">
+              <div className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">
+                {batch.workflowId}
+              </div>
+              <StatusBadge status={batch.status} />
+            </div>
+            <div className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">
+              {new Date(batch.createdAt).toLocaleString()}
+            </div>
+          </div>
+          <div className="rounded-lg overflow-hidden border border-slate-100">
+            <ResultsTable result={batchToWorkflowResult(batch)} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ---------- Loading Skeleton ----------
 
 function LoadingSkeleton() {
@@ -226,8 +273,29 @@ export default function DashboardPage() {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadToast, setUploadToast] = useState<UploadToast | null>(null);
+  const [recentBatches, setRecentBatches] = useState<RecentBatch[]>([]);
+  const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(
+    null,
+  );
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const reloadPersistedDashboard = useCallback(async () => {
+    try {
+      const [batches, stats] = await Promise.all([
+        getRecentBatches(),
+        getDashboardStats(),
+      ]);
+      setRecentBatches(batches);
+      setDashboardStats(stats);
+    } catch (err) {
+      console.error("Failed to load batch history:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reloadPersistedDashboard();
+  }, [reloadPersistedDashboard]);
 
   const stopPolling = useCallback(() => {
     if (intervalRef.current) {
@@ -323,6 +391,14 @@ export default function DashboardPage() {
         if (data.status === "COMPLETED" && data.result) {
           setResult(data.result);
           stopPolling();
+          if (workflowId) {
+            const saveRes = await saveBatchResult(workflowId, data.result);
+            if (saveRes.ok) {
+              await reloadPersistedDashboard();
+            } else {
+              console.error("Failed to persist batch:", saveRes.error);
+            }
+          }
         } else if (data.status === "FAILED") {
           setError(data.message ?? "Workflow failed");
           stopPolling();
@@ -335,17 +411,29 @@ export default function DashboardPage() {
 
     intervalRef.current = setInterval(poll, 2000);
     return () => stopPolling();
-  }, [polling, workflowId, stopPolling]);
+  }, [polling, workflowId, stopPolling, reloadPersistedDashboard]);
 
-  // Derived metrics for KPIs
+  // KPIs: primary source = Prisma (survives refresh). While a run finishes, overlay success/pending from live `result` until DB reload.
   const resultEntries = result ? Object.values(result) : [];
-  const approvedCount = resultEntries.filter((r) => r.status === "APPROVED").length;
-  const totalCount = resultEntries.length;
-  const successRate =
-    totalCount > 0 ? ((approvedCount / totalCount) * 100).toFixed(1) : "94.3";
-  const pendingCount = resultEntries.filter(
-    (r) => r.status !== "APPROVED" && r.status !== "SYSTEM_ERROR"
+  const liveApproved = resultEntries.filter((r) => r.status === "APPROVED").length;
+  const liveTotal = resultEntries.length;
+  const liveSuccessPct =
+    liveTotal > 0 ? ((liveApproved / liveTotal) * 100).toFixed(1) : null;
+  const livePending = resultEntries.filter(
+    (r) => r.status !== "APPROVED" && r.status !== "SYSTEM_ERROR",
   ).length;
+
+  const batchesLabel =
+    dashboardStats == null ? "—" : String(dashboardStats.batchCount);
+  const successRateDisplay =
+    liveSuccessPct ??
+    (dashboardStats != null ? dashboardStats.successRatePct : "0.0");
+  const pendingDisplay =
+    liveTotal > 0 ? livePending : (dashboardStats?.pendingReviews ?? 0);
+  const successBarWidth = Math.min(
+    100,
+    Math.max(0, parseFloat(successRateDisplay) || 0),
+  );
 
   return (
     <div className="bg-[#f7f9fb] min-h-full text-[#191c1e] font-['Inter',system-ui,sans-serif]">
@@ -385,43 +473,51 @@ export default function DashboardPage() {
         <section className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
           <KpiCard
             label="Batches Processed"
-            value={totalCount > 0 ? String(totalCount) : "247"}
+            value={batchesLabel}
             footer={
-              <div className="flex items-center gap-1 text-[#00502e] text-xs font-semibold">
-                <TrendingUp className="h-3 w-3" />
-                +12% from last month
+              <div className="text-xs text-slate-500">
+                {dashboardStats == null && batchesLabel === "—" ? (
+                  <span className="text-slate-400">Loading…</span>
+                ) : dashboardStats && dashboardStats.totalInvoices > 0 ? (
+                  <span>
+                    {dashboardStats.totalInvoices} invoice
+                    {dashboardStats.totalInvoices !== 1 ? "s" : ""} recorded
+                  </span>
+                ) : (
+                  <span>No batches persisted yet</span>
+                )}
               </div>
             }
           />
           <KpiCard
             label="Success Rate"
-            value={`${successRate}%`}
+            value={`${successRateDisplay}%`}
             footer={
               <div className="w-full bg-[#f2f4f6] h-1.5 rounded-full overflow-hidden">
                 <div
                   className="bg-[#00502e] h-full transition-all duration-500"
-                  style={{ width: `${successRate}%` }}
+                  style={{ width: `${successBarWidth}%` }}
                 />
               </div>
             }
           />
           <KpiCard
             label="Pending Reviews"
-            value={totalCount > 0 ? String(pendingCount) : "12"}
-            accent={pendingCount > 0 || totalCount === 0 ? "error" : "primary"}
+            value={String(pendingDisplay)}
+            accent={pendingDisplay > 0 ? "error" : "primary"}
             footer={
-              pendingCount > 0 || totalCount === 0 ? (
+              pendingDisplay > 0 ? (
                 <div className="flex items-center gap-2">
                   <span className="inline-block w-2 h-2 rounded-full bg-[#ba1a1a] animate-pulse" />
                   <span className="text-xs text-[#ba1a1a] font-medium">
-                    Critical attention required
+                    Invoices needing follow-up
                   </span>
                 </div>
               ) : (
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="h-3 w-3 text-[#00502e]" />
                   <span className="text-xs text-[#00502e] font-medium">
-                    All clear
+                    No pending review queue
                   </span>
                 </div>
               )
@@ -590,7 +686,12 @@ export default function DashboardPage() {
 
               {polling && <LoadingSkeleton />}
               {!polling && result && <ResultsTable result={result} />}
-              {!polling && !result && !error && <EmptyState />}
+              {!polling && !result && recentBatches.length > 0 && (
+                <BatchHistoryList batches={recentBatches} />
+              )}
+              {!polling && !result && recentBatches.length === 0 && !error && (
+                <EmptyState />
+              )}
 
               {result && (
                 <div className="px-6 py-4 bg-slate-50/30 flex justify-center border-t border-slate-50">

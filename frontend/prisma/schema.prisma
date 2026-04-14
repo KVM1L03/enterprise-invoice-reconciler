@@ -1,0 +1,27 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Batch {
+  id         String   @id @default(cuid())
+  workflowId String   @unique
+  status     String
+  createdAt  DateTime @default(now())
+  invoices   Invoice[]
+}
+
+model Invoice {
+  id             String  @id @default(cuid())
+  batchId        String
+  invoiceId      String
+  status         String
+  expectedAmount Float?
+  reason         String
+  batch          Batch   @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId])
+}

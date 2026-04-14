@@ -9,6 +9,7 @@ services:
       - "5432:5432"
     volumes:
       - temporal-postgres:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     networks:
       - temporal-net
     healthcheck:
@@ -82,6 +83,8 @@ services:
       - TEMPORAL_ADDRESS=temporal:7233
     volumes:
       - ./mock_data:/app/mock_data
+      # Same SQLite as host so seed_data.py / init_db updates are visible to MCP
+      - ./mcp_bridge/erp_mock.db:/app/mcp_bridge/erp_mock.db
     networks:
       - temporal-net
 
