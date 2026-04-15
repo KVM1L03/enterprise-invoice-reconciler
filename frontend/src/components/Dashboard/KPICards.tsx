@@ -1,36 +1,7 @@
-"use client";
-
 import { CheckCircle2 } from "lucide-react";
 
+import { StatCard } from "@/components/shared/StatCard";
 import type { DashboardStats } from "@/types";
-
-const CARD_SHADOW = "shadow-[0_12px_40px_rgba(25,28,30,0.04)]";
-
-type KpiCardProps = {
-  label: string;
-  value: string;
-  accent?: "primary" | "error";
-  footer?: React.ReactNode;
-};
-
-function KpiCard({ label, value, accent = "primary", footer }: KpiCardProps) {
-  const valueColor = accent === "error" ? "text-[#ba1a1a]" : "text-[#00502e]";
-  return (
-    <div
-      className={`bg-white rounded-xl ${CARD_SHADOW} border border-slate-100 p-6 flex flex-col gap-1`}
-    >
-      <span className="text-[0.7rem] font-medium text-slate-500 uppercase tracking-[0.15em]">
-        {label}
-      </span>
-      <span
-        className={`text-[3.25rem] font-bold ${valueColor} leading-none mt-2 tracking-tight`}
-      >
-        {value}
-      </span>
-      <div className="mt-4">{footer}</div>
-    </div>
-  );
-}
 
 export type KPICardsProps = {
   batchesLabel: string;
@@ -40,7 +11,6 @@ export type KPICardsProps = {
   successBarWidth: number;
 };
 
-/** Top statistics row — presentational only (values computed by parent). */
 export function KPICards({
   batchesLabel,
   dashboardStats,
@@ -50,7 +20,7 @@ export function KPICards({
 }: KPICardsProps) {
   return (
     <section className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
-      <KpiCard
+      <StatCard
         label="Batches Processed"
         value={batchesLabel}
         footer={
@@ -68,7 +38,7 @@ export function KPICards({
           </div>
         }
       />
-      <KpiCard
+      <StatCard
         label="Success Rate"
         value={`${successRateDisplay}%`}
         footer={
@@ -80,7 +50,7 @@ export function KPICards({
           </div>
         }
       />
-      <KpiCard
+      <StatCard
         label="Pending Reviews"
         value={String(pendingDisplay)}
         accent={pendingDisplay > 0 ? "error" : "primary"}

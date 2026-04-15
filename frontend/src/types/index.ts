@@ -52,3 +52,17 @@ export type PaginatedBatches = {
   totalPages: number;
   currentPage: number;
 };
+
+export type FinOpsDailyPoint = {
+  date: string;
+  apiCostUsd: number;
+  invoicesProcessed: number;
+};
+
+export type FinOpsSummaryStats = {
+  totalApiCostUsd: number;
+  totalInvoicesProcessed: number;
+  hoursSaved: number;
+  laborSavingsUsd: number;
+  costPerInvoiceUsd: number;
+};
