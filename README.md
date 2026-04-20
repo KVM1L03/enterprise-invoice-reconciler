@@ -2,7 +2,7 @@
 
 ## 🔴 Demo
 
-![Nagranieekranuz2026-04-1416-59-13-ezgif com-video-to-gif-converter](https://github.com/user-attachments/assets/67d75802-5075-44da-8b15-6ec949c8c73d)
+[OmniAccountant.webm](https://github.com/user-attachments/assets/c72284a6-a576-44e6-8454-a99038d2c414)
 
 > **Production-grade, AI-powered B2B platform that automates invoice-to-ERP matching using LLMs, durable workflows, and a zero-trust data integration layer.**
 
