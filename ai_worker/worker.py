@@ -5,6 +5,9 @@ import logging
 import os
 
 from dotenv import load_dotenv
+from langfuse import get_client
+from openinference.instrumentation.dspy import DSPyInstrumentor
+from openinference.instrumentation.litellm import LiteLLMInstrumentor
 from temporalio.client import Client
 from temporalio.worker import Worker
 
@@ -28,6 +31,13 @@ TEMPORAL_ADDRESS = os.environ.get("TEMPORAL_ADDRESS", "localhost:7233")
 async def main() -> None:
     """Start the Temporal worker for invoice reconciliation."""
     load_dotenv()
+
+    # Initialise Langfuse (registers the global OTEL TracerProvider)
+    # BEFORE instrumenting DSPy/LiteLLM so their spans use our exporter.
+    get_client()
+    DSPyInstrumentor().instrument()
+    LiteLLMInstrumentor().instrument()
+
     get_configured_lm()
 
     client = await Client.connect(TEMPORAL_ADDRESS)

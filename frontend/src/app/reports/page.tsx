@@ -3,18 +3,17 @@ import type { Metadata } from "next";
 import { FinOpsChartLazy } from "@/components/Reports/FinOpsChartLazy";
 import { FinOpsSummary } from "@/components/Reports/FinOpsSummary";
 import { ReportHeader } from "@/components/Reports/ReportHeader";
-import {
-  finOpsMockData,
-  summarizeFinOps,
-} from "@/components/Reports/mockData";
+import { summarizeFinOps } from "@/components/Reports/mockData";
+import { getFinOpsTelemetry } from "@/app/actions";
 
 export const metadata: Metadata = {
   title: "Reports — FinOps & Telemetry",
   description: "LLM FinOps telemetry: API spend vs. manual labor savings",
 };
 
-export default function ReportsPage() {
-  const stats = summarizeFinOps(finOpsMockData);
+export default async function ReportsPage() {
+  const data = await getFinOpsTelemetry(7);
+  const stats = summarizeFinOps(data);
 
   return (
     <div className="bg-[#f7f9fb] min-h-full text-[#191c1e] font-['Inter',system-ui,sans-serif]">
@@ -26,7 +25,7 @@ export default function ReportsPage() {
 
         <section className="space-y-8">
           <FinOpsSummary stats={stats} />
-          <FinOpsChartLazy data={finOpsMockData} />
+          <FinOpsChartLazy data={data} />
         </section>
       </div>
     </div>

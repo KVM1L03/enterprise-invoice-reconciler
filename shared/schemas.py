@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field, ConfigDict
+from pydantic.alias_generators import to_camel
 from typing import Literal, Optional
 
 class InvoiceData(BaseModel):
@@ -20,6 +21,20 @@ class InvoiceData(BaseModel):
         ..., 
         description="Total amount on the invoice. Must be a pure float (e.g., 1500.50). Do NOT include currency symbols like '$'."
     )
+
+class FinOpsDailyPoint(BaseModel):
+    """Single daily telemetry data point for the FinOps report."""
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
+
+    date: str = Field(..., description="ISO date string YYYY-MM-DD")
+    api_cost_usd: float = Field(..., description="Total LLM API cost for the day in USD")
+    invoices_processed: int = Field(..., description="Number of invoices reconciled")
+
 
 class ReconciliationDecision(BaseModel):
     """

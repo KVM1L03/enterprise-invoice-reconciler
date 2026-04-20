@@ -6,11 +6,14 @@ import shutil
 from datetime import timedelta
 from pathlib import Path
 
+from langfuse import get_client
 from temporalio import activity
 from temporalio.common import RetryPolicy
 
 from ai_worker.agent_graph import reconciliation_app
 from shared.pdf_utils import extract_text_from_pdf
+
+_langfuse = get_client()
 
 logger = logging.getLogger(__name__)
 
@@ -34,20 +37,37 @@ async def process_invoice_activity(file_path: str) -> dict:
     """
     logger.info("Starting invoice reconciliation activity for %s", file_path)
 
-    extracted_text = await extract_text_from_pdf(file_path)
+    try:
+        with _langfuse.start_as_current_observation(
+            as_type="span",
+            name="invoice_reconciliation",
+            input={"file_path": file_path},
+        ) as trace:
+            try:
+                extracted_text = await extract_text_from_pdf(file_path)
 
-    final_state = await reconciliation_app.ainvoke(
-        {"raw_text": extracted_text}
-    )
+                final_state = await reconciliation_app.ainvoke(
+                    {"raw_text": extracted_text}
+                )
 
-    decision = final_state["final_decision"]
-    if decision is None:
-        msg = "Reconciliation graph completed without producing a decision"
-        raise RuntimeError(msg)
+                decision = final_state["final_decision"]
+                if decision is None:
+                    msg = (
+                        "Reconciliation graph completed without producing a decision"
+                    )
+                    raise RuntimeError(msg)
 
-    result: dict = decision.model_dump()
-    logger.info("Activity complete — decision: %s", result["status"])
-    return result
+                result: dict = decision.model_dump()
+                logger.info("Activity complete — decision: %s", result["status"])
+                trace.update(
+                    output=result, metadata={"status": result["status"]}
+                )
+                return result
+            except Exception:
+                trace.update(level="ERROR")
+                raise
+    finally:
+        _langfuse.flush()
 
 
 APPROVED_STATUSES: frozenset[str] = frozenset({"APPROVED"})

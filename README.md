@@ -69,7 +69,7 @@ The system is a **distributed microservices architecture** with strict separatio
 | **Frontend** | Next.js 16 · React 19 · Tailwind CSS v4 · Prisma ORM 7 | Server Actions for type-safe RPC, persistent reconciliation history |
 | **API Gateway** | FastAPI · Pydantic v2 (strict mode) · Uvicorn | Async HTTP, strict type contracts, OpenAPI auto-docs |
 | **Orchestration** | Temporal.io | Durable execution, automatic retries, workflow replay, deterministic guarantees |
-| **AI Engine** | DSPy · LangGraph · PyMuPDF · Langfuse | Structured LLM extraction (no prompt strings), agentic decision graph, PDF text extraction, full LLM observability |
+| **AI Engine** | DSPy · LangGraph · PyMuPDF · Langfuse (self-hosted) | Structured LLM extraction (no prompt strings), agentic decision graph, PDF text extraction, full LLM observability |
 | **ERP Integration** | Model Context Protocol (FastMCP) · SQLite | Zero-trust tool boundary — the LLM agent can only touch the ERP through audited MCP calls |
 | **Application DB** | PostgreSQL 16 · Prisma ORM | Persistent batch history, KPI aggregation, schema-isolated from Temporal internals |
 | **Infrastructure** | Docker Compose · `uv` (Python) · `npm` (Node) | One-command bring-up, reproducible builds |
@@ -130,10 +130,15 @@ OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 GEMINI_API_KEY=AIza...
 
-# LLM Observability (optional but recommended)
+# LLM Observability — self-hosted Langfuse (docker-compose runs it on port 3030)
 LANGFUSE_PUBLIC_KEY=pk-lf-...
 LANGFUSE_SECRET_KEY=sk-lf-...
-LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_BASE_URL=http://langfuse:3000
+
+# Langfuse container secrets (generate each with: openssl rand -hex 32)
+LANGFUSE_NEXTAUTH_SECRET=<openssl rand -hex 32>
+LANGFUSE_SALT=<openssl rand -hex 32>
+LANGFUSE_ENCRYPTION_KEY=<64 hex chars>
 
 # Temporal (defaults to host networking)
 TEMPORAL_ADDRESS=temporal:7233
@@ -202,11 +207,12 @@ This brings up the full backend stack:
 
 | Service | Description | Port |
 |---|---|---|
-| `postgres` | PostgreSQL 16 (Temporal + Prisma `app` schema) | `5432` |
+| `postgres` | PostgreSQL 16 (Temporal + Prisma `app` schema + Langfuse) | `5432` |
 | `temporal` | Temporal server | `7233` (gRPC) |
 | `temporal-ui` | Temporal Web UI | `8085` |
 | `api-gateway` | FastAPI HTTP layer | `8000` |
 | `ai-worker` | Temporal worker (DSPy + LangGraph + MCP) | — |
+| `langfuse` | LLM observability (self-hosted) | `3030` |
 
 Wait ~20 seconds for Temporal to finish provisioning, then verify health:
 
@@ -248,6 +254,39 @@ You're live! 🎉
 | 🖥️ **[http://localhost:3000](http://localhost:3000)** | Next.js dashboard — upload invoices, trigger reconciliation, view persisted history |
 | 📋 **[http://localhost:8000/docs](http://localhost:8000/docs)** | FastAPI OpenAPI / Swagger UI |
 | ⏱️ **[http://localhost:8085](http://localhost:8085)** | Temporal Web UI — inspect workflow runs, retries, and replays |
+| 🔍 **[http://localhost:3030](http://localhost:3030)** | Langfuse — LLM observability, traces, cost tracking |
+
+---
+
+### Langfuse self-hosted setup
+
+Langfuse runs as a Docker service on port **3030** (to avoid conflicting with Next.js on port 3000). It shares the existing Postgres container but uses a separate `langfuse` database.
+
+**First-time setup (existing Postgres volume):**
+
+The Langfuse database needs to be created manually if your Postgres volume already exists:
+
+```bash
+docker exec -it $(docker compose ps -q postgres) psql -U temporal -c "CREATE DATABASE langfuse;"
+```
+
+**For fresh installs:** The init script at `docker/postgres/init/` handles this automatically.
+
+**After Langfuse starts:**
+
+1. Open **http://localhost:3030** and create an account
+2. Create a new project and generate API keys
+3. Update `.env` with the new `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`
+4. Restart the backend: `docker compose restart api-gateway ai-worker`
+
+Generate proper secrets for production-like setups:
+
+```bash
+# Replace placeholder values in .env
+openssl rand -hex 32  # → LANGFUSE_NEXTAUTH_SECRET
+openssl rand -hex 32  # → LANGFUSE_SALT
+openssl rand -hex 32  # → LANGFUSE_ENCRYPTION_KEY (must be 64 hex chars)
+```
 
 ---
 

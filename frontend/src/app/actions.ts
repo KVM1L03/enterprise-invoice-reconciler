@@ -3,15 +3,18 @@
 import { prisma } from "@/lib/prisma";
 import type {
   DashboardStats,
+  FinOpsDailyPoint,
   OverrideResponse,
   OverrideStatus,
   PaginatedBatches,
   SaveBatchResponse,
   WorkflowResult,
 } from "@/types";
+import { finOpsMockData } from "@/components/Reports/mockData";
 
 export type {
   DashboardStats,
+  FinOpsDailyPoint,
   OverrideResponse,
   OverrideStatus,
   PaginatedBatches,
@@ -148,5 +151,29 @@ export async function clearAllBatches(): Promise<{
       ok: false,
       error: err instanceof Error ? err.message : "Unknown DB error",
     };
+  }
+}
+
+const API_GATEWAY_URL =
+  process.env.API_GATEWAY_URL ?? "http://localhost:8000";
+
+export async function getFinOpsTelemetry(
+  days: number = 7,
+): Promise<FinOpsDailyPoint[]> {
+  try {
+    const res = await fetch(
+      `${API_GATEWAY_URL}/telemetry/finops?days=${days}`,
+      { signal: AbortSignal.timeout(2000), cache: "no-store" },
+    );
+    if (!res.ok) {
+      console.error(
+        `[getFinOpsTelemetry] Backend returned ${res.status}: ${res.statusText}`,
+      );
+      return finOpsMockData;
+    }
+    return (await res.json()) as FinOpsDailyPoint[];
+  } catch (err) {
+    console.error("[getFinOpsTelemetry] Falling back to mock data:", err);
+    return finOpsMockData;
   }
 }
