@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import re
 import uuid
 from collections import defaultdict
 from collections.abc import AsyncIterator
@@ -29,7 +30,46 @@ INVOICES_DIR = Path(__file__).resolve().parent.parent / "mock_data" / "invoices"
 TASK_QUEUE = "invoice-reconciliation-queue"
 TEMPORAL_ADDRESS = os.environ.get("TEMPORAL_ADDRESS", "localhost:7233")
 
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB per file
+_UPLOAD_READ_CHUNK = 256 * 1024
+_SAFE_PDF_FILENAME = re.compile(r"^[A-Za-z0-9._-]+\.pdf$", re.IGNORECASE)
+
 _telemetry_cache: TTLCache[int, list[FinOpsDailyPoint]] = TTLCache(maxsize=8, ttl=60)
+
+
+def _safe_pdf_filename(raw: str | None) -> str:
+    """Accept only ``[A-Za-z0-9._-]+\\.pdf``; reject path traversal, nulls, spaces."""
+    if not raw:
+        raise HTTPException(status_code=400, detail="Filename missing.")
+    name = Path(raw).name
+    if name in {"", ".", ".."} or not _SAFE_PDF_FILENAME.fullmatch(name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid filename. Allowed characters: letters, digits, dot, "
+                "dash, underscore; must end in .pdf."
+            ),
+        )
+    return name
+
+
+async def _read_bounded(file: UploadFile, max_bytes: int) -> bytes:
+    """Stream the upload into memory, aborting early if it exceeds ``max_bytes``."""
+    buf = bytearray()
+    while True:
+        chunk = await file.read(_UPLOAD_READ_CHUNK)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"File '{file.filename}' exceeds "
+                    f"{max_bytes // (1024 * 1024)} MB limit."
+                ),
+            )
+    return bytes(buf)
 
 
 @asynccontextmanager
@@ -97,15 +137,8 @@ async def upload_invoices(files: list[UploadFile] = File(...)) -> dict:
 
     saved: list[str] = []
     for file in files:
-        filename = Path(file.filename or "unnamed.pdf").name
-
-        if not filename.lower().endswith(".pdf"):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Only PDF files allowed, got: {filename}",
-            )
-
-        content = await file.read()
+        filename = _safe_pdf_filename(file.filename)
+        content = await _read_bounded(file, MAX_UPLOAD_BYTES)
         target = INVOICES_DIR / filename
         await asyncio.to_thread(target.write_bytes, content)
         saved.append(filename)
