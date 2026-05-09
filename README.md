@@ -1,479 +1,535 @@
 # OmniAccountant
 
-## 🔴 Demo
+[![CI](https://github.com/KVM1L03/OmniAccountant/actions/workflows/ci.yml/badge.svg)](https://github.com/KVM1L03/OmniAccountant/actions/workflows/ci.yml)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Next.js 16](https://img.shields.io/badge/Next.js-16-000000?logo=next.js&logoColor=white)](https://nextjs.org/)
+[![Temporal](https://img.shields.io/badge/Temporal-1.24-FF6F00?logo=temporal&logoColor=white)](https://temporal.io/)
+[![DSPy](https://img.shields.io/badge/DSPy-3.x-blueviolet)](https://dspy.ai/)
+[![Langfuse](https://img.shields.io/badge/Langfuse-v3-1f1f1f)](https://langfuse.com/)
+
+> AI-powered invoice-to-ERP reconciliation. Durable workflows, structured LLM extraction, zero-trust ERP access, full LLM observability.
+
+## Demo
 
 [OmniAccountant.webm](https://github.com/user-attachments/assets/c72284a6-a576-44e6-8454-a99038d2c414)
 
-> **Production-grade, AI-powered B2B platform that automates invoice-to-ERP matching using LLMs, durable workflows, and a zero-trust data integration layer.**
+---
 
-[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Next.js](https://img.shields.io/badge/Next.js-16-000000?logo=next.js&logoColor=white)](https://nextjs.org/)
-[![Temporal](https://img.shields.io/badge/Temporal-Workflows-FF6F00?logo=temporal&logoColor=white)](https://temporal.io/)
-[![DSPy](https://img.shields.io/badge/DSPy-LLM-blueviolet)](https://dspy.ai/)
-[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
+## Table of contents
+
+1. [Why this exists](#why-this-exists)
+2. [Architecture](#architecture)
+3. [Pipeline — one invoice end-to-end](#pipeline--one-invoice-end-to-end)
+4. [Observability](#observability) — Langfuse, Temporal, OpenTelemetry
+5. [Quick start](#quick-start)
+6. [Configuration](#configuration)
+7. [Step-by-step setup](#step-by-step-setup)
+8. [Testing & CI](#testing--ci)
+9. [Evaluation suite](#evaluation-suite)
+10. [Project structure](#project-structure)
+11. [Architectural invariants](#architectural-invariants)
 
 ---
 
-## 💡 The Business Problem
+## Why this exists
 
-Enterprise finance teams burn thousands of hours every month manually cross-referencing supplier invoices against purchase orders in their ERP systems. A single discrepancy — a swapped line item, an incorrect tax rate, a vendor pricing drift — can leak revenue and trigger audit findings.
+Enterprise AP teams burn thousands of hours each month cross-referencing supplier invoices against purchase orders. A swapped line item, an off-by-cents tax rounding, a vendor pricing drift — each one leaks revenue or surfaces an audit finding.
 
-**This platform automates the entire reconciliation loop:**
+**OmniAccountant automates the loop end-to-end:**
 
-- 📥 **Ingest** PDF invoices from email, hot folders, or direct upload
-- 🧠 **Extract** structured data (vendor, line items, totals, tax) using LLMs with type-safe outputs
-- 🔍 **Reconcile** each invoice against the ERP's expected purchase order data via a secure tool-calling agent
-- ⚖️ **Decide** with full audit trail: `APPROVED`, `DISCREPANCY`, or `HUMAN_REVIEW_NEEDED`
-- 📊 **Persist** every decision so finance ops can review history, drill into outliers, and prove compliance
+| Stage | What it does |
+|---|---|
+| **Ingest** | Hot-folder pickup, dashboard upload, or batch trigger |
+| **Extract** | DSPy-driven structured extraction — typed `InvoiceData` out, no prompt strings |
+| **Reconcile** | LangGraph agent calls ERP via MCP tools (zero-trust boundary) |
+| **Decide** | `APPROVED` · `DISCREPANCY` · `HUMAN_REVIEW_NEEDED` with reason + ERP delta |
+| **Persist** | PostgreSQL audit trail; Langfuse trace per decision |
 
-The result: **manual audit time drops from hours per invoice to seconds**, while every decision remains explainable, durable, and observable.
+Every decision is **explainable** (traced), **durable** (Temporal-replayable), and **auditable** (MCP-bounded data access).
 
 ---
 
-## 🏛️ Architecture
+## Architecture
 
-The system is a **distributed microservices architecture** with strict separation of concerns. Each layer is independently scalable and uses durable execution where state matters.
+```mermaid
+graph TB
+    subgraph Frontend["Frontend — Next.js 16 + React 19"]
+        UI[Dashboard]
+        Reports[FinOps Reports]
+    end
 
+    subgraph Edge["Edge — FastAPI"]
+        Gateway[api_gateway/]
+    end
+
+    subgraph Orchestration["Orchestration — Temporal"]
+        WF[BatchReconciliationWorkflow]
+        A1[process_invoice_activity]
+        A2[route_invoice_file_activity]
+    end
+
+    subgraph AI["AI layer"]
+        DSPy[dspy_engine — extraction]
+        Graph[agent_graph — LangGraph]
+    end
+
+    subgraph Data["Zero-trust data — MCP"]
+        MCP[mcp_bridge/]
+        ERP[(SQLite ERP mock)]
+    end
+
+    subgraph Persistence["Persistence"]
+        AppDB[(Postgres · invoice_app)]
+        TempDB[(Postgres · temporal)]
+    end
+
+    subgraph Obs["Observability"]
+        LF[Langfuse · LLM traces]
+        TUI[Temporal UI · workflow replays]
+    end
+
+    UI -->|Server Action| Gateway
+    Reports -->|/telemetry/finops| Gateway
+    Gateway -->|gRPC| WF
+    WF --> A1
+    WF --> A2
+    A1 --> DSPy
+    A1 --> Graph
+    Graph -->|MCP stdio| MCP
+    MCP --> ERP
+    UI -.->|Prisma| AppDB
+    WF -.-> TempDB
+    DSPy -.->|OTel spans| LF
+    Graph -.->|OTel spans| LF
+    WF -.-> TUI
+
+    classDef edge fill:#e0f2fe,stroke:#0284c7
+    classDef ai fill:#fef3c7,stroke:#ca8a04
+    classDef data fill:#fce7f3,stroke:#be185d
+    classDef obs fill:#dcfce7,stroke:#16a34a
+    class Gateway edge
+    class DSPy,Graph ai
+    class MCP,ERP data
+    class LF,TUI obs
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                     Next.js Dashboard (Frontend)                      │
-│         React 19 · Tailwind v4 · Prisma ORM · Server Actions          │
-└────────────────────────────┬─────────────────────────────────────────┘
-                             │ HTTP + RPC (Server Actions)
-                             ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                   FastAPI Gateway (api_gateway/)                      │
-│             Async upload · Workflow trigger · Status polling          │
-└────────────────────────────┬─────────────────────────────────────────┘
-                             │ Temporal gRPC
-                             ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│              Temporal Workflow Orchestration (ai_worker/)             │
-│  Deterministic batch workflow · Parallel activities · Retry policies  │
-│                                                                       │
-│   Phase 1: process_invoice_activity  (DSPy + LangGraph + MCP)         │
-│   Phase 2: route_invoice_file_activity (hot-folder routing)           │
-└────────────────────────────┬─────────────────────────────────────────┘
-                             │ MCP tool calls (stdio)
-                             ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│              MCP Bridge — Zero-Trust ERP Layer (mcp_bridge/)          │
-│       FastMCP server · SQLite ERP mock · Tool-call audit boundary     │
-└──────────────────────────────────────────────────────────────────────┘
-```
 
-### Tech Stack
+### Tech stack
 
-| Layer | Technology | Why |
+| Layer | Choice | Rationale |
 |---|---|---|
-| **Frontend** | Next.js 16 · React 19 · Tailwind CSS v4 · Prisma ORM 7 | Server Actions for type-safe RPC, persistent reconciliation history |
-| **API Gateway** | FastAPI · Pydantic v2 (strict mode) · Uvicorn | Async HTTP, strict type contracts, OpenAPI auto-docs |
-| **Orchestration** | Temporal.io | Durable execution, automatic retries, workflow replay, deterministic guarantees |
-| **AI Engine** | DSPy · LangGraph · PyMuPDF · Langfuse (self-hosted) | Structured LLM extraction (no prompt strings), agentic decision graph, PDF text extraction, full LLM observability |
-| **ERP Integration** | Model Context Protocol (FastMCP) · SQLite | Zero-trust tool boundary — the LLM agent can only touch the ERP through audited MCP calls |
-| **Application DB** | PostgreSQL 16 · Prisma ORM | Persistent batch history, KPI aggregation, schema-isolated from Temporal internals |
-| **Infrastructure** | Docker Compose · `uv` (Python) · `npm` (Node) | One-command bring-up, reproducible builds |
+| **Frontend** | Next.js 16 · React 19 · Tailwind v4 · Prisma 7 | Server Actions = type-safe RPC; one binary for SSR + dashboard |
+| **API gateway** | FastAPI · Pydantic v2 strict | Async I/O, OpenAPI docs free, strict mode kills coercion bugs |
+| **Orchestration** | Temporal 1.24 | Durable execution + replay + automatic retries — non-negotiable for financial workflows |
+| **LLM extraction** | DSPy 3.x | `Signature`-driven structured output; zero raw prompts in code |
+| **Reconciliation agent** | LangGraph | Stateful tool-calling graph; clean separation from extraction |
+| **ERP boundary** | MCP (FastMCP) | Single audit boundary; LLM agent cannot reach SQL directly |
+| **LLM observability** | Langfuse v3 (self-hosted) + OpenInference + OTel | Cost, latency, prompt tracking — see [Observability](#observability) |
+| **App DB** | PostgreSQL 16 + Prisma | Single shared container, three logical DBs (`temporal`, `invoice_app`, `langfuse`) |
+| **Build** | `uv` (Python) · `npm` (Node) · Docker Compose | One-command bring-up; reproducible CI |
 
-### Architectural Highlights
+### Architectural highlights
 
-- **🔒 Zero-trust ERP access:** Direct database connections from the AI agent are forbidden. Every read/write goes through the MCP bridge, which becomes the single auditable choke point for compliance.
-- **♻️ Deterministic workflows:** Temporal workflows contain zero I/O — all side effects live in activities. This makes them replay-safe and observable in the Temporal UI.
-- **🧩 Strict typing end-to-end:** Pydantic v2 (`ConfigDict(strict=True)`) on the Python side, TypeScript `strict: true` on the frontend, and Prisma-generated types bridge the gap.
-- **⚡ Concurrency-safe LLM access:** DSPy LMs are process-wide singletons; per-call scoping uses `dspy.context(lm=...)` to avoid race conditions during parallel activity execution.
-- **📦 Schema isolation:** Prisma uses a dedicated `app` PostgreSQL schema in the same container as Temporal — zero collision, one container.
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-
-You'll need the following installed on your machine:
-
-- 🐳 **Docker** & **Docker Compose** — for the backend stack (Postgres, Temporal, FastAPI, AI worker)
-- 📦 **[uv](https://github.com/astral-sh/uv)** — fast Python package manager (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
-- 🟢 **Node.js 20+** & **npm** — for the Next.js frontend
-- 🔑 GCP access to Gemini Enterprise / Vertex AI (recommended) or legacy LLM API keys
-  - For local Docker + Gemini Enterprise, place your service-account JSON at `secrets/gcp-vertex-sa.json`.
+- **Deterministic workflows.** All I/O is in Activities; Workflows replay byte-for-byte. No `datetime.now()`, no `random()`, no HTTP. See `ai_worker/workflows.py`.
+- **Concurrency-safe LM access.** DSPy LMs are process-wide singletons (`threading.Lock`-guarded). Per-call scoping uses `dspy.context(lm=...)` to avoid global-state races when Temporal runs activities in parallel. See `ai_worker/llm_router.py`.
+- **Zero-trust ERP.** The agent has no DB credentials. Every read goes through `@mcp.tool()` decorated functions in `mcp_bridge/server.py`, giving you a single chokepoint for audit + rate-limit + RLS.
+- **Strict typing end-to-end.** `ConfigDict(strict=True)` on every Pydantic model; TypeScript `strict: true`; Prisma-generated types bridge the wire.
+- **Schema isolation.** Three databases on one Postgres container — Temporal internals, app data, and Langfuse never collide.
 
 ---
 
-## ⚡ Quick Start (TL;DR)
+## Pipeline — one invoice end-to-end
 
-**Fresh clone with Gemini Enterprise / Vertex AI — recommended local path:**
+This is what happens when you drop a single PDF into the dashboard. Every arrow is a real interface boundary in the codebase.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User (Dashboard)
+    participant FE as Next.js Server Action
+    participant GW as FastAPI Gateway
+    participant T as Temporal
+    participant W as ai_worker
+    participant DSPy as DSPy Engine
+    participant LG as LangGraph Agent
+    participant MCP as MCP Bridge
+    participant ERP as ERP (SQLite)
+    participant LF as Langfuse
+
+    U->>FE: Upload PDF
+    FE->>GW: POST /reconcile (multipart)
+    GW->>T: Start BatchReconciliationWorkflow
+    T->>W: Execute process_invoice_activity
+    W->>LF: start_observation("invoice_reconciliation")
+    W->>DSPy: extract(invoice_text)
+    DSPy-->>LF: span: gen_ai.request (model, tokens, cost)
+    DSPy-->>W: InvoiceData (Pydantic strict)
+    W->>LG: ainvoke({raw_text})
+    LG->>MCP: verify_purchase_order(invoice_id, amount)
+    MCP->>ERP: SELECT expected_amount WHERE id=?
+    ERP-->>MCP: 16817.50
+    MCP-->>LG: {status: "discrepancy", diff: 50.00}
+    LG-->>W: ReconciliationDecision
+    W->>T: route_invoice_file_activity(decision)
+    T-->>GW: Workflow complete
+    GW-->>FE: {status: "DISCREPANCY", reason, erp_expected_amount}
+    FE-->>U: Live status + persisted in Postgres
+```
+
+**Failure semantics:**
+
+- LLM call fails (429, 5xx) → Temporal Activity retry policy fires; spans show every attempt in Langfuse
+- MCP call fails → Activity fails; Temporal UI shows the exact tool call and stack
+- DSPy returns malformed output → Pydantic strict mode rejects; activity surfaces a typed error
+- Worker crashes mid-batch → Workflow resumes from last completed activity on next worker connect
+
+---
+
+## Observability
+
+Two non-overlapping layers. **Don't conflate them** — they answer different questions.
+
+```mermaid
+graph LR
+    subgraph App["Application code"]
+        D[DSPy module]
+        L[LiteLLM client]
+        T[Temporal Workflow]
+    end
+
+    subgraph OTel["OpenTelemetry pipeline"]
+        OI[OpenInference attrs]
+        TP[OTel TracerProvider]
+    end
+
+    subgraph Backends["Observability backends"]
+        LF[Langfuse · LLM-specific]
+        TUI[Temporal UI · workflow-specific]
+    end
+
+    D -->|@observe + instrument| OI
+    L -->|LiteLLMInstrumentor| OI
+    OI --> TP
+    TP -->|OTLP HTTP| LF
+    T -->|gRPC| TUI
+
+    classDef ai fill:#fef3c7,stroke:#ca8a04
+    classDef wf fill:#dcfce7,stroke:#16a34a
+    class LF ai
+    class TUI wf
+```
+
+### Layer 1 — LLM observability via Langfuse
+
+**What it answers:** "Which prompt did this generation see? How many tokens? How much did it cost? Was the model output what we expected? How does latency drift across the week?"
+
+**Stack:** [OpenInference](https://github.com/Arize-ai/openinference) emits LLM-specific OTel span attributes (token counts, model name, prompt content). The OTel SDK ships them via OTLP/HTTP to Langfuse, which converts them into rich generations + traces with cost calculation and prompt linking.
+
+**Wired up at:** `ai_worker/worker.py` — `get_client()` registers the global TracerProvider; then `DSPyInstrumentor().instrument()` and `LiteLLMInstrumentor().instrument()` patch the libraries to emit spans automatically.
+
+**FinOps cost tracking gotcha (Vertex AI users):** Langfuse calculates cost by joining the trace's `model` attribute against its model-pricing table. LiteLLM emits the model as `vertex_ai/gemini-2.5-flash` (provider-prefixed), but Langfuse's seed pricing only ships entries without the prefix. **Tokens will record but cost will be `null`.** Fix in Langfuse UI → Settings → Models → Add custom model:
+
+```text
+Match pattern: ^(vertex_ai/)?gemini-2\.5-flash$
+input price:   0.0000003   ($0.30 / 1M tokens)
+output price:  0.0000025   ($2.50 / 1M tokens)
+```
+
+Langfuse recomputes cost only for **new** generations after this entry is saved. Old traces stay at $0.
+
+**Where to look:**
+
+| Question | URL | Path |
+|---|---|---|
+| Why did this invoice get DISCREPANCY? | http://localhost:3030 | Tracing → filter by `name:invoice_reconciliation` → click trace → expand DSPy span → see input PDF text + structured output |
+| What's our daily LLM spend? | http://localhost:3000/reports | Frontend hits `/telemetry/finops` which aggregates `total_cost` from Langfuse traces |
+| Which model is being used right now? | http://localhost:3030 | Any generation → "Provided model name" attribute |
+| Did a prompt regress on a known input? | http://localhost:3030 | Datasets → Run → side-by-side diff |
+
+### Layer 2 — Workflow observability via Temporal UI
+
+**What it answers:** "Where in the workflow are we right now? Why did this activity retry? What input did Activity attempt #4 receive? Can I replay this workflow with patched code without re-running side effects?"
+
+**This is not LLM-aware.** Temporal sees activities as opaque function calls. It cares about *durability* (every event is persisted), *determinism* (workflows replay deterministically from history), and *recovery* (worker crashes → next worker resumes).
+
+**Where to look:**
+
+| Question | URL | Path |
+|---|---|---|
+| Stuck batch — what's pending? | http://localhost:8085 | Workflows → Running → click the workflow → Pending Activities |
+| Why did `process_invoice_activity` retry 3 times? | http://localhost:8085 | Activity → History tab → see exception traceback at each attempt |
+| Replay a closed workflow with new code | http://localhost:8085 | Built-in replayer — no production-side state changes |
+
+### Why both — and why not "just OpenTelemetry"
+
+Langfuse v4 *is* OpenTelemetry. It's a thin layer on top of the official OTel SDK that adds LLM-specific aggregations (cost rollup, prompt versioning, generation-vs-span typing, eval datasets, model-pricing joins). Migrating to "vanilla OTel + Jaeger/Tempo" is a regression in this codebase: you'd lose token cost tracking, prompt management, and the FinOps dashboard endpoint that consumes `langfuse.api.trace.list`.
+
+Temporal speaks gRPC, not OTel — it has its own event sourcing model where the workflow history *is* the trace. Forcing it into OTel would lose deterministic replay semantics, which is the whole reason Temporal is in this stack.
+
+**Net:** keep the two-layer split. They're complementary, not redundant.
+
+### Debug playbook
+
+| Symptom | First thing to check | Then |
+|---|---|---|
+| Workflow stuck > 1 min | Temporal UI → Pending Activities | If LLM activity wedged: check Langfuse for the in-flight generation; check Vertex/OpenAI quota in cloud console |
+| Cost shows $0 in `/reports` despite tokens recording | Langfuse model pricing table (see gotcha above) | If pricing is set and trace.total_cost is still null: bounce `api-gateway` (60s in-memory cache in `_telemetry_cache`) |
+| LLM output schema validation error | Langfuse generation → "Output" tab — see the raw model output | Pydantic strict mode is rejecting it; check if the model returned natural language instead of JSON |
+| Activity worked locally, fails in Docker | `make logs-vertex \| grep ai-worker` | Usually env var or service-account JSON mount issue |
+
+---
+
+## Quick start
+
+**Vertex AI / Gemini Enterprise (recommended):**
 
 ```bash
-cp .env.example .env    # then fill Vertex AI project settings or switch LLM_PROVIDER=api_keys
+cp .env.example .env                              # fill VERTEXAI_PROJECT
 mkdir -p secrets
 cp /path/to/service-account.json secrets/gcp-vertex-sa.json
 make install
-make seed
+make seed                                          # ⚠️ MUST run before docker up
 make up-build-vertex
-make frontend
+make frontend                                      # in a second terminal
 ```
 
-`make up-build-vertex` uses `docker-compose.vertex.example.yml` so the `ai-worker` container can read the mounted service-account JSON.
-
-**Legacy API-key users** can still use:
+**Legacy API keys (OpenAI / Anthropic / Gemini API):**
 
 ```bash
-make bootstrap
+make bootstrap     # install + seed + up-build + npm run dev
 ```
 
-`make bootstrap` runs `install` → `seed` → `up-build` → `npm run dev` in sequence:
-1. Installs all dependencies (`uv sync`, `npm ci`)
-2. Seeds mock data (`seed_data.py` — generates PDFs + `erp_mock.db`)
-3. Brings up the full Docker stack (Temporal, Postgres, FastAPI, AI worker, Langfuse + its deps)
-4. Starts the Next.js dev server in the foreground
+Open:
 
-**Subsequent Gemini Enterprise runs** — deps and seed are already in place:
-
-```bash
-make dev-vertex
-```
-
-**Subsequent legacy/API-key runs:**
-
-```bash
-make dev
-```
-
-Then open:
-- **Dashboard:** http://localhost:3000
-- **Temporal UI:** http://localhost:8085
-- **API Docs:** http://localhost:8000/docs
-- **Langfuse:** http://localhost:3030
+- Dashboard: http://localhost:3000
+- Reports / FinOps: http://localhost:3000/reports
+- Temporal UI: http://localhost:8085
+- Langfuse: http://localhost:3030
+- API docs: http://localhost:8000/docs
 
 ---
 
-## 📖 Step-by-step setup (if you prefer manual control)
+## Configuration
 
-### Step 1 — Configure environment variables
-
-Create a `.env` file in the **project root** (used by FastAPI and the AI worker via Docker `env_file`):
+### Root `.env` (FastAPI + AI worker)
 
 ```bash
-# LLM Provider — production default is Gemini Enterprise / Vertex AI via GCP IAM
-LLM_PROVIDER=vertex_ai
+# LLM provider
+LLM_PROVIDER=vertex_ai                             # or "api_keys"
 VERTEXAI_PROJECT=your-gcp-project-id
 VERTEXAI_LOCATION=europe-west4
-# Optional model overrides. Defaults are provider-aware:
-#   vertex_ai -> vertex_ai/gemini-2.5-flash for both primary and fast paths
-#   api_keys  -> best available legacy model based on populated API keys
+# Optional model overrides — defaults to vertex_ai/gemini-2.5-flash both paths
 # PRIMARY_LLM_MODEL=vertex_ai/gemini-2.5-flash
 # FAST_LLM_MODEL=vertex_ai/gemini-2.5-flash
-# Set only when using a mounted service-account JSON file.
+
+# When using mounted SA JSON instead of host ADC:
 # GOOGLE_APPLICATION_CREDENTIALS=/var/secrets/google/gcp-vertex-sa.json
 
-# Legacy / fallback API-key providers (only used when LLM_PROVIDER=api_keys)
+# Legacy keys (only when LLM_PROVIDER=api_keys)
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 GEMINI_API_KEY=AIza...
 
-# LLM Observability — self-hosted Langfuse (docker-compose runs it on port 3030)
+# Langfuse client (project-scoped — generated in Langfuse UI on first login)
 LANGFUSE_PUBLIC_KEY=pk-lf-...
 LANGFUSE_SECRET_KEY=sk-lf-...
 LANGFUSE_BASE_URL=http://localhost:3030
 
-# Langfuse container secrets (generate each with: openssl rand -hex 32)
-LANGFUSE_NEXTAUTH_SECRET=<openssl rand -hex 32>
-LANGFUSE_SALT=<openssl rand -hex 32>
-LANGFUSE_ENCRYPTION_KEY=<64 hex chars>
+# Langfuse server (generate once with: openssl rand -hex 32)
+LANGFUSE_NEXTAUTH_SECRET=...                       # Rotating invalidates sessions
+LANGFUSE_SALT=...
+LANGFUSE_ENCRYPTION_KEY=...                        # 64 hex chars exactly
 
-# Temporal (defaults to host networking)
 TEMPORAL_ADDRESS=temporal:7233
 ```
 
-For local host runs, authenticate with Application Default Credentials:
-
-```bash
-gcloud auth application-default login
-gcloud config set project your-gcp-project-id
-```
-
-For Docker Compose development with a service-account JSON key, keep the key out of git and use the Vertex Makefile targets:
-
-```bash
-mkdir -p secrets
-cp /path/to/service-account.json secrets/gcp-vertex-sa.json
-make up-build-vertex
-```
-
-The Docker Compose services override `LANGFUSE_BASE_URL` to `http://langfuse:3000` internally, so keep the root `.env` value as `http://localhost:3030` for host-side tools and documentation. Production deployments should prefer Workload Identity or a runtime-bound service account over JSON keys. The service account needs `roles/aiplatform.user`; add scoped Storage permissions only if you later move invoices to GCS.
-
-Create `frontend/.env.local` for Prisma to reach Postgres (the same container Temporal uses, but in a dedicated database):
+### `frontend/.env.local` (Next.js + Prisma)
 
 ```bash
 DATABASE_URL="postgresql://temporal:temporal@localhost:5432/invoice_app"
 API_GATEWAY_URL="http://localhost:8000"
 ```
 
-> 💡 `invoice_app` is a separate database on the shared Postgres container (distinct from Temporal's `temporal` DB and Langfuse's `langfuse` DB). Prisma 7's `db push` creates it automatically on first run using the `createdb` grant that the `temporal` user has — no manual SQL required.
+> Three databases on one Postgres container: `temporal` (workflow history), `invoice_app` (Prisma app schema), `langfuse` (observability metadata). The `langfuse` DB is created idempotently by `make up`'s `langfuse-db-create` target. Prisma's `db push` creates `invoice_app` on first run.
+
+### Vertex AI authentication paths
+
+| Context | How |
+|---|---|
+| Local Python (host) | `gcloud auth application-default login` then `gcloud config set project ...` |
+| Local Docker | Mount SA JSON → `secrets/gcp-vertex-sa.json` → `make up-build-vertex` |
+| Production | Workload Identity or runtime-bound SA — never JSON keys |
+
+The SA needs `roles/aiplatform.user`. Add `roles/storage.*` only if you move invoices to GCS.
 
 ---
 
-### Step 2 — Install dependencies
+## Step-by-step setup
 
-```bash
-make install
-```
+For when `make bootstrap` doesn't work and you need to debug.
 
-Or manually:
-
-```bash
-uv sync
-cd frontend && npm ci
-```
-
----
-
-### Step 3 — Seed the data ⚠️ **(Critical!)**
-
-Generate the mock invoices and seed the ERP database:
+### 1. Seed mock data (must come first)
 
 ```bash
 make seed
 ```
 
-Or manually:
+Creates `mock_data/invoices/*.pdf` (3 matching, 2 with discrepancies) and `mcp_bridge/erp_mock.db` with corresponding PO rows.
+
+> ⚠️ The `ai-worker` container bind-mounts `mcp_bridge/erp_mock.db`. If the file doesn't exist on the host first, Docker creates it as a *directory* and the worker fails on `aiosqlite.connect(...)`.
+
+### 2. Start the stack
 
 ```bash
-uv run python seed_data.py
+make up-build-vertex          # Vertex SA path
+# or
+make up-build                 # Legacy API-key path
 ```
 
-This script:
-- Creates **5 sample PDFs** in `mock_data/invoices/` (3 matching, 2 with discrepancies)
-- Seeds `mcp_bridge/erp_mock.db` (SQLite) with the corresponding ERP purchase-order rows
-
-> ⚠️ **Why this must run before `docker compose up`:** the `ai-worker` service mounts `mcp_bridge/erp_mock.db` as a bind mount. If the file doesn't exist on the host first, Docker creates it as a directory and the worker fails to open the SQLite database. **Always seed before you start the stack.**
-
----
-
-### Step 4 — Start the backend
-
-For Gemini Enterprise / Vertex AI with a local service-account JSON:
+Brings up: `postgres`, `temporal` + `temporal-ui` + `temporal-admin-setup`, `api-gateway`, `ai-worker`, `langfuse` + `langfuse-worker`, `clickhouse`, `redis`, `minio` + `minio-setup`. Wait ~30s for migrations.
 
 ```bash
-make up-build-vertex
+make ps-vertex && curl -I http://localhost:8000/docs
 ```
 
-For legacy API-key providers or host-level ADC:
+All containers should be `Up (healthy)`.
 
-```bash
-make up-build
-```
+### 3. Bootstrap Langfuse (one-time)
 
-Or manually:
+1. http://localhost:3030 → create admin account (sign-up disables itself after first user)
+2. Create project → copy public + secret keys → paste into `.env`
+3. Add Vertex model pricing (see [Observability gotcha](#layer-1--llm-observability-via-langfuse))
+4. `docker compose restart api-gateway ai-worker`
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.vertex.example.yml up --build -d  # Vertex JSON override
-docker compose up --build -d                                                       # legacy/API-key path
-```
-
-This brings up the full backend stack:
-
-| Service | Description | Port |
-|---|---|---|
-| `postgres` | PostgreSQL 16 (Temporal + `invoice_app` + `langfuse` databases) | `5432` |
-| `temporal` | Temporal server | `7233` (gRPC) |
-| `temporal-ui` | Temporal Web UI | `8085` |
-| `temporal-admin-setup` | One-shot: registers the `default` namespace | — |
-| `api-gateway` | FastAPI HTTP layer | `8000` |
-| `ai-worker` | Temporal worker (DSPy + LangGraph + MCP) | — |
-| `langfuse` | LLM observability UI (self-hosted) | `3030` |
-| `langfuse-worker` | Langfuse async event ingestion worker | — |
-| `clickhouse` | OLAP store for Langfuse traces/observations | — |
-| `redis` | Queue / cache for Langfuse | — |
-| `minio` | S3-compatible object store for Langfuse events/media | `9090` (API) / `9091` (console) |
-| `minio-setup` | One-shot: creates the `langfuse` bucket in MinIO | — |
-
-Wait ~20 seconds for Temporal and Langfuse to finish provisioning, then verify health:
-
-```bash
-make ps-vertex   # or `make ps` for the non-Vertex compose path
-curl -I http://localhost:8000/docs
-```
-
----
-
-### Step 5 — Start the frontend
-
-In a separate terminal:
+### 4. Start the frontend
 
 ```bash
 make frontend
 ```
 
-Or manually:
-
+Equivalent to:
 ```bash
 cd frontend
-npm install                  # Install Node dependencies (first time only)
-npx prisma db push           # Create the `app` schema + tables in Postgres
-npx prisma generate          # Generate the type-safe Prisma client
+npx prisma db push && npx prisma generate
 npm run dev
 ```
 
-> 🎯 Prisma's `db push` is idempotent — safe to re-run after schema edits.
+### 5. End-to-end smoke test
+
+1. http://localhost:3000 → Select PDFs → upload from `mock_data/invoices/`
+2. Click **Scan & Process Directory**
+3. Status badge transitions `RUNNING` → `COMPLETED`
+4. Refresh — see persisted result in **Recent Batch Results**
+5. Cross-check: http://localhost:8085 (Temporal workflow), http://localhost:3030 (Langfuse trace), http://localhost:3000/reports (FinOps cost rollup)
 
 ---
 
-### Step 6 — Open the dashboard
+## Testing & CI
 
-You're live! 🎉
+GitHub Actions runs three independent jobs on every push and PR to `main`:
 
-| URL | What's there |
+| Job | Command (mirrors locally) |
 |---|---|
-| 🖥️ **[http://localhost:3000](http://localhost:3000)** | Next.js dashboard — upload invoices, trigger reconciliation, view persisted history |
-| 📋 **[http://localhost:8000/docs](http://localhost:8000/docs)** | FastAPI OpenAPI / Swagger UI |
-| ⏱️ **[http://localhost:8085](http://localhost:8085)** | Temporal Web UI — inspect workflow runs, retries, and replays |
-| 🔍 **[http://localhost:3030](http://localhost:3030)** | Langfuse — LLM observability, traces, cost tracking |
+| **python-lint** | `uv run ruff check .` |
+| **python-test** | `uv run pytest tests/ --cov=. --cov-report=xml` |
+| **frontend-lint** | `cd frontend && npm run lint` |
 
----
+Pipeline: [`.github/workflows/ci.yml`](./.github/workflows/ci.yml).
 
-### Langfuse self-hosted setup
-
-Langfuse runs as a Docker service on port **3030** (to avoid conflicting with Next.js on port 3000). It shares the existing Postgres container but uses a separate `langfuse` database, which `make up` / `make up-build` create idempotently via the `langfuse-db-create` target (see `Makefile`).
-
-**After Langfuse starts:**
-
-1. Open **http://localhost:3030** and create an admin account. Sign-up is disabled after the first account (`AUTH_DISABLE_SIGNUP=true` in `docker-compose.yml`) — to add more users, temporarily flip it off.
-2. Create a new project and generate API keys
-3. Update `.env` with the new `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`
-4. Restart the backend: `docker compose restart api-gateway ai-worker`
-
-Generate the container-side Langfuse secrets once (they must stay stable — rotating them invalidates existing sessions and encrypted data):
+Run all three locally before pushing:
 
 ```bash
-# Write each into .env
-openssl rand -hex 32  # → LANGFUSE_NEXTAUTH_SECRET
-openssl rand -hex 32  # → LANGFUSE_SALT
-openssl rand -hex 32  # → LANGFUSE_ENCRYPTION_KEY (must be 64 hex chars)
+uv run ruff check .
+uv run pytest tests/
+cd frontend && npm run lint
 ```
 
-For Gemini Enterprise / Vertex AI cost tracking, add a Langfuse custom model definition if traces show token usage but `cost = 0`:
-
-```text
-Match pattern: ^(vertex_ai/)?gemini-2\.5-flash$
-input:  0.00000030  # $0.30 / 1M tokens
-output: 0.00000250  # $2.50 / 1M tokens
-```
-
-Langfuse applies pricing to new generations ingested after the model definition is saved.
+Pytest's `tests/conftest.py` autouse fixture seeds `mcp_bridge/erp_mock.db` so tests work in CI without `make seed` (the DB file is gitignored).
 
 ---
 
-## 🧪 End-to-end test
+## Evaluation suite
 
-1. Open the dashboard at `http://localhost:3000`
-2. Click **Select PDFs** → upload one or more files from `mock_data/invoices/`
-3. Click **Upload Selected Invoices**
-4. Click **Scan & Process Directory** to trigger a Temporal batch workflow
-5. Watch the live status badge change from `RUNNING` → `COMPLETED`
-6. The dashboard auto-saves the result via a Server Action; refresh the page to see it persist in the **Recent Batch Results** history
-7. Inspect workflow internals at the Temporal UI (`localhost:8085`) — every activity, retry, and parameter is replayable
+Two layers, both designed to run with **zero LLM cost** by default.
+
+### Promptfoo — extraction accuracy
+
+Config: [`promptfooconfig.yaml`](./promptfooconfig.yaml). Provider is `evals/mock_dspy_provider.py` — a Python function that pattern-matches invoice IDs in fixture text and returns pre-baked `InvoiceData` JSON. Zero network calls.
+
+```bash
+npx promptfoo eval && npx promptfoo view
+```
+
+Asserts JSON validity, exact-match on `invoice_id`/`vendor_name`/`total_amount`, and a prompt-injection guard (a fixture with `[Ignore previous instructions...]` embedded in the vendor line — output must not contain `"hacked"` or alter the amount).
+
+### LLM-as-judge — decision verification
+
+Script: [`evals/llm_judge_evals.py`](./evals/llm_judge_evals.py). Verifies whether a `ReconciliationDecision` is correct given the stated and ERP-expected amounts.
+
+```bash
+EVAL_DRY_RUN=1 uv run python evals/llm_judge_evals.py        # zero-cost, business-rule verdict
+JUDGE_MODEL=claude-haiku-4-5-20251001 uv run python evals/llm_judge_evals.py   # ~$0.001/run
+```
+
+Dry-run mode computes the verdict deterministically from `|stated - expected| < 0.01`. The live mode uses Claude Haiku via litellm with `num_retries=3`.
 
 ---
 
-## 📁 Project structure
+## Project structure
 
 ```
 .
-├── api_gateway/            # FastAPI HTTP layer (upload, batch trigger, status)
-├── ai_worker/              # Temporal worker
-│   ├── workflows.py        # Deterministic batch reconciliation workflow
-│   ├── activities.py       # Side-effecting activities (PDF parse, LLM, routing)
-│   ├── dspy_engine.py      # DSPy module — structured invoice extraction
-│   ├── agent_graph.py      # LangGraph agent — ERP reconciliation + span redaction
-│   ├── llm_router.py       # Thread-safe LM singleton (primary + fast fallback chain)
-│   └── worker.py           # Temporal worker entrypoint + OpenInference instrumentation
-├── mcp_bridge/             # Zero-trust ERP integration
-│   ├── server.py           # FastMCP server exposing ERP lookups as tools
-│   ├── init_db.py          # Bootstraps the SQLite schema
-│   └── erp_mock.db         # Seeded by seed_data.py (do NOT commit changes)
+├── api_gateway/             # FastAPI HTTP layer
+│   └── main.py              # Upload, batch trigger, /telemetry/finops
+├── ai_worker/               # Temporal worker
+│   ├── workflows.py         # Deterministic batch workflow
+│   ├── activities.py        # Side-effecting activities
+│   ├── dspy_engine.py       # Structured invoice extraction
+│   ├── agent_graph.py       # LangGraph reconciliation agent
+│   ├── llm_router.py        # Thread-safe LM singleton
+│   └── worker.py            # Entrypoint + OpenInference instrumentation
+├── mcp_bridge/              # Zero-trust ERP boundary
+│   ├── server.py            # FastMCP server
+│   └── init_db.py           # SQLite bootstrap
 ├── shared/
-│   └── schemas.py          # Pydantic v2 contracts (InvoiceData, ReconciliationDecision)
-├── frontend/               # Next.js dashboard
+│   ├── schemas.py           # InvoiceData, ReconciliationDecision, FinOpsDailyPoint
+│   └── pdf_utils.py         # Sandboxed PyMuPDF text extraction
+├── frontend/                # Next.js 16
 │   ├── src/app/
-│   │   ├── page.tsx        # Main dashboard (Editorial Enterprise design system)
-│   │   ├── layout.tsx      # Sidebar + brand chrome
-│   │   └── actions.ts      # Server Actions (saveBatchResult, getRecentBatches, getDashboardStats)
-│   ├── src/lib/prisma.ts   # PrismaClient singleton with PrismaPg adapter
-│   ├── prisma/schema.prisma# Batch + Invoice models
-│   └── prisma.config.ts    # Prisma 7 CLI configuration
-├── mock_data/              # Sample invoices + processed buckets (approved/, discrepancy/)
-├── tests/                  # Pytest suite for LLM routing, DSPy integration, MCP tools
-├── docker-compose.yml      # Full backend stack
-├── docker-compose.vertex.example.yml # Local Vertex/Gemini service-account override
-├── frontend/.env.example   # Frontend DATABASE_URL + API gateway template
-├── seed_data.py            # ⚠️ Run first to bootstrap mock data
-└── pyproject.toml          # Python deps managed by uv
+│   │   ├── page.tsx         # Dashboard
+│   │   ├── reports/page.tsx # FinOps + telemetry
+│   │   └── actions.ts       # Server Actions
+│   ├── src/lib/format.ts    # Adaptive USD formatter (handles sub-dollar costs)
+│   └── prisma/schema.prisma # Batch + Invoice models
+├── evals/                   # Eval suite
+│   ├── mock_dspy_provider.py
+│   ├── llm_judge_evals.py
+│   └── fixtures/
+├── promptfooconfig.yaml     # Promptfoo entrypoint
+├── tests/                   # Pytest — LLM router, DSPy, MCP server
+├── .github/workflows/ci.yml # CI pipeline
+├── docker-compose.yml
+├── docker-compose.vertex.example.yml
+├── seed_data.py             # ⚠️ Run first
+└── pyproject.toml
 ```
 
 ---
 
-## 🛠️ Makefile targets
+## Architectural invariants
 
-The `Makefile` provides shortcuts for common workflows:
+These are not style preferences — they are correctness guarantees. Violations break replay, audit, or concurrency.
 
-| Command | Description |
-|---|---|
-| `make bootstrap` | **First run from fresh clone** — install + seed + up-build + frontend |
-| `make dev` | Daily use — Docker stack (rebuild) + Next.js dev server |
-| `make install` | Install all dependencies (`uv sync` + `npm ci`) |
-| `make seed` | Regenerate mock PDFs + `erp_mock.db` |
-| `make up` | Start Docker stack without rebuild |
-| `make up-build` | Start Docker stack with rebuild |
-| `make up-vertex` | Start Docker stack with Gemini Enterprise / Vertex service-account override |
-| `make up-build-vertex` | Start Docker stack with rebuild and Vertex override |
-| `make down` | Stop all containers (volumes preserved) |
-| `make dev-vertex` | Docker stack with Vertex override + Next.js dev server |
-| `make frontend` | Run Next.js dev server only (assumes Docker stack is running) |
-| `make logs` | Follow Docker Compose logs |
-| `make logs-vertex` | Follow logs using the Vertex compose override |
-| `make ps` | List running containers |
-| `make ps-vertex` | List running containers using the Vertex compose override |
-| `make db-push` | Generate Prisma client + sync schema to Postgres |
+1. **Microservices boundary.** `api_gateway`, `ai_worker`, `mcp_bridge` are separate processes. Never collapse them.
+2. **Workflows are deterministic.** No `datetime.now()`, `random()`, `time.sleep()`, or HTTP calls inside `@workflow.defn`. All side effects → activities. Use `workflow.now()`, `workflow.sleep()` if needed.
+3. **No prompt strings.** Extraction goes through `dspy.Signature`. No LangChain prompt templates. No f-strings building model inputs.
+4. **Pydantic strict mode.** Every cross-process schema has `model_config = ConfigDict(strict=True)`.
+5. **Zero-trust data.** The agent has no DB connection string. ERP reads/writes go through `@mcp.tool()` exclusively.
+6. **LM singletons.** `dspy.LM` instances are process-wide singletons guarded by `threading.Lock`. Never call `dspy.configure()` — use `dspy.context(lm=...)` per-call instead.
+
+Full contributor guide: [`CLAUDE.md`](./CLAUDE.md).
 
 ---
 
-## 🔧 Common commands (without Makefile)
+## License
 
-```bash
-# Backend
-docker compose -f docker-compose.yml -f docker-compose.vertex.example.yml up --build -d  # Gemini Enterprise / Vertex local Docker
-docker compose up --build -d                                                   # Legacy/API-key Docker path
-docker compose logs -f ai-worker                                                # Tail the AI worker
-docker compose down                                                             # Stop everything (volumes preserved)
-
-# Python (local)
-uv sync                             # Install / update dependencies
-uv run python seed_data.py          # Re-seed mock data
-uv run pytest                       # Run tests
-
-# Frontend
-cd frontend
-npm run dev                         # Next.js dev server
-npm run lint                        # ESLint
-npx prisma studio                   # Visual DB browser at localhost:5555
-npx prisma db push                  # Sync schema to Postgres
-npx prisma generate                 # Generate Prisma client types
-```
-
----
-
-## 📐 Architectural rules (for contributors)
-
-1. **Microservices only** — never combine `api_gateway`, `mcp_bridge`, and `ai_worker` into a single process.
-2. **Durable execution** — all business logic lives in Temporal workflows + activities. Workflows are 100% deterministic (no `datetime.now()`, no raw HTTP).
-3. **No prompt engineering** — extraction uses DSPy, not LangChain or raw prompt strings.
-4. **Strict typing** — Pydantic v2 with `ConfigDict(strict=True)` on Python; `strict: true` on TypeScript.
-5. **Zero trust** — database access from the agent goes through the MCP bridge, never directly.
-
-See [`CLAUDE.md`](./CLAUDE.md) for the full contributor guide.
-
----
-
-## 📜 License
-
-MIT — built as a portfolio piece demonstrating production-grade AI engineering patterns.
+MIT.

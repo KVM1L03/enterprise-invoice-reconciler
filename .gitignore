@@ -12,6 +12,9 @@ eggs/
 .eggs/
 lib/
 lib64/
+# Python venv lib/ pattern above must not eat the frontend's lib/ dir
+!frontend/src/lib/
+!frontend/src/lib/**
 parts/
 sdist/
 var/

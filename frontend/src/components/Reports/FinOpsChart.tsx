@@ -12,6 +12,7 @@ import {
   YAxis,
 } from "recharts";
 
+import { formatUsd } from "@/lib/format";
 import type { FinOpsDailyPoint } from "@/types";
 
 const COLOR_COST = "#00502e";
@@ -33,13 +34,6 @@ type ChartTooltipProps = {
   payload?: TooltipPayloadItem[];
   label?: string;
 };
-
-function formatCurrency(value: number): string {
-  return `$${value.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
 
 function ChartTooltip({ active, payload, label }: ChartTooltipProps) {
   if (!active || !payload || payload.length === 0) return null;
@@ -63,7 +57,7 @@ function ChartTooltip({ active, payload, label }: ChartTooltipProps) {
               {isCost ? "API Cost" : "Invoices"}
             </span>
             <span className="font-mono font-semibold text-[#191c1e]">
-              {isCost ? formatCurrency(entry.value) : entry.value}
+              {isCost ? formatUsd(entry.value) : entry.value}
             </span>
           </div>
         );

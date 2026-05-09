@@ -1,18 +1,12 @@
 import { Clock, DollarSign, FileText, Wallet } from "lucide-react";
 
 import { StatCard } from "@/components/shared/StatCard";
+import { formatUsd } from "@/lib/format";
 import type { FinOpsSummaryStats } from "@/types";
 
 export type FinOpsSummaryProps = {
   stats: FinOpsSummaryStats;
 };
-
-function formatUsd(value: number): string {
-  return `$${value.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
 
 function formatHours(value: number): string {
   return `${value.toLocaleString("en-US", {
