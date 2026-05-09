@@ -7,7 +7,7 @@ import pytest
 
 from mcp_bridge.server import verify_purchase_order
 
-DB_PATH = Path(__file__).resolve().parent / "erp_mock.db"
+DB_PATH = Path(__file__).resolve().parent.parent / "mcp_bridge" / "erp_mock.db"
 
 
 def _get_first_po() -> tuple[str, float]:

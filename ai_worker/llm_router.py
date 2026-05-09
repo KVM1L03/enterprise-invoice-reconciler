@@ -1,11 +1,12 @@
-"""Multi-LLM router with fallback chain using LiteLLM and DSPy."""
+"""Multi-LLM router with provider-aware configuration using LiteLLM and DSPy."""
 
 import logging
 import os
 import threading
+from typing import Literal
 
 import dspy
-from pydantic import ConfigDict
+from pydantic import ConfigDict, model_validator
 from pydantic_settings import BaseSettings
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -17,33 +18,112 @@ _lm_lock = threading.Lock()
 
 
 class Settings(BaseSettings):
-    """Strictly validated environment settings for LLM API keys."""
+    """Strictly validated environment settings for LLM provider access."""
 
     model_config = ConfigDict(strict=True, case_sensitive=True)
 
-    ANTHROPIC_API_KEY: str
-    OPENAI_API_KEY: str
-    GEMINI_API_KEY: str
+    LLM_PROVIDER: Literal["vertex_ai", "api_keys"] | None = None
+    PRIMARY_LLM_MODEL: str | None = None
+    FAST_LLM_MODEL: str | None = None
+    VERTEXAI_PROJECT: str | None = None
+    VERTEXAI_LOCATION: str = "us-central1"
+    GOOGLE_APPLICATION_CREDENTIALS: str | None = None
+    ANTHROPIC_API_KEY: str | None = None
+    OPENAI_API_KEY: str | None = None
+    GEMINI_API_KEY: str | None = None
+
+    @model_validator(mode="after")
+    def validate_provider_credentials(self) -> "Settings":
+        """Fail fast with actionable errors before Temporal starts work."""
+        has_legacy_key = any(
+            (self.ANTHROPIC_API_KEY, self.OPENAI_API_KEY, self.GEMINI_API_KEY)
+        )
+
+        if self.LLM_PROVIDER is None:
+            self.LLM_PROVIDER = "vertex_ai" if self.VERTEXAI_PROJECT else "api_keys"
+
+        if self.LLM_PROVIDER == "vertex_ai" and not self.VERTEXAI_PROJECT:
+            msg = "VERTEXAI_PROJECT is required when LLM_PROVIDER=vertex_ai"
+            raise ValueError(msg)
+
+        if self.LLM_PROVIDER == "api_keys" and not has_legacy_key:
+            msg = "at least one legacy LLM API key is required when LLM_PROVIDER=api_keys"
+            raise ValueError(msg)
+
+        if self.PRIMARY_LLM_MODEL is None:
+            self.PRIMARY_LLM_MODEL = self._default_primary_model()
+        if self.FAST_LLM_MODEL is None:
+            self.FAST_LLM_MODEL = self._default_fast_model()
+
+        if self.LLM_PROVIDER == "api_keys" and (
+            self.PRIMARY_LLM_MODEL.startswith("vertex_ai/")
+            or self.FAST_LLM_MODEL.startswith("vertex_ai/")
+        ):
+            msg = "LLM_PROVIDER=api_keys cannot use vertex_ai/ models"
+            raise ValueError(msg)
+
+        return self
+
+    def _default_primary_model(self) -> str:
+        if self.LLM_PROVIDER == "vertex_ai":
+            return "vertex_ai/gemini-2.5-flash"
+        if self.ANTHROPIC_API_KEY:
+            return "anthropic/claude-3-5-sonnet-latest"
+        if self.OPENAI_API_KEY:
+            return "openai/gpt-4o"
+        return "gemini/gemini-2.0-flash"
+
+    def _default_fast_model(self) -> str:
+        if self.LLM_PROVIDER == "vertex_ai":
+            return "vertex_ai/gemini-2.5-flash"
+        if self.GEMINI_API_KEY:
+            return "gemini/gemini-2.0-flash"
+        return self._default_primary_model()
+
+
+def _configure_provider_environment(settings: Settings) -> None:
+    """Expose provider credentials in the env format expected by LiteLLM."""
+    if settings.LLM_PROVIDER == "vertex_ai":
+        if settings.VERTEXAI_PROJECT:
+            os.environ.setdefault("VERTEXAI_PROJECT", settings.VERTEXAI_PROJECT)
+        os.environ.setdefault("VERTEXAI_LOCATION", settings.VERTEXAI_LOCATION)
+        if settings.GOOGLE_APPLICATION_CREDENTIALS:
+            os.environ.setdefault(
+                "GOOGLE_APPLICATION_CREDENTIALS",
+                settings.GOOGLE_APPLICATION_CREDENTIALS,
+            )
+        return
+
+    if settings.ANTHROPIC_API_KEY:
+        os.environ.setdefault("ANTHROPIC_API_KEY", settings.ANTHROPIC_API_KEY)
+    if settings.OPENAI_API_KEY:
+        os.environ.setdefault("OPENAI_API_KEY", settings.OPENAI_API_KEY)
+    if settings.GEMINI_API_KEY:
+        os.environ.setdefault("GEMINI_API_KEY", settings.GEMINI_API_KEY)
 
 
 def _build_primary_lm() -> dspy.LM:
     settings = Settings()
+    _configure_provider_environment(settings)
 
-    # Expose keys as env vars so LiteLLM auto-discovers them per provider
-    os.environ.setdefault("ANTHROPIC_API_KEY", settings.ANTHROPIC_API_KEY)
-    os.environ.setdefault("OPENAI_API_KEY", settings.OPENAI_API_KEY)
-    os.environ.setdefault("GEMINI_API_KEY", settings.GEMINI_API_KEY)
+    lm_kwargs: dict[str, object] = {
+        "model": settings.PRIMARY_LLM_MODEL,
+        "max_tokens": 4096,
+        "timeout": 30,
+        "max_retries": 3,
+    }
+    if (
+        settings.LLM_PROVIDER == "api_keys"
+        and settings.OPENAI_API_KEY
+        and settings.PRIMARY_LLM_MODEL != "openai/gpt-4o"
+    ):
+        lm_kwargs["fallbacks"] = ["openai/gpt-4o"]
 
-    lm = dspy.LM(
-        model="anthropic/claude-3-5-sonnet-latest",
-        max_tokens=4096,
-        timeout=30,
-        max_retries=3,
-        fallbacks=["openai/gpt-4o"],
-    )
+    lm = dspy.LM(**lm_kwargs)
 
     logger.info(
-        "Configured DSPy LM (process singleton): Claude-3.5-Sonnet + GPT-4o fallback"
+        "Configured primary DSPy LM (process singleton): %s",
+        settings.PRIMARY_LLM_MODEL,
     )
     return lm
 
@@ -67,13 +147,16 @@ def get_configured_lm() -> dspy.LM:
 
 def _build_fast_lm() -> dspy.LM:
     settings = Settings()
-    os.environ.setdefault("GEMINI_API_KEY", settings.GEMINI_API_KEY)
+    _configure_provider_environment(settings)
     lm = dspy.LM(
-        model="gemini/gemini-2.0-flash",
+        model=settings.FAST_LLM_MODEL,
         timeout=15,
         max_retries=2,
     )
-    logger.info("Initialized fast LM (process singleton): Gemini 2.0 Flash")
+    logger.info(
+        "Configured fast DSPy LM (process singleton): %s",
+        settings.FAST_LLM_MODEL,
+    )
     return lm
 
 

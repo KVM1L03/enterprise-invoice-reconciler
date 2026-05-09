@@ -1,0 +1,16 @@
+# Optional local override for Gemini Enterprise / Vertex AI credentials.
+#
+# Usage:
+#   mkdir -p secrets
+#   cp /path/to/service-account.json secrets/gcp-vertex-sa.json
+#   docker compose -f docker-compose.yml -f docker-compose.vertex.example.yml up -d --build
+#
+# Production deployments should prefer Workload Identity or a runtime-bound
+# service account instead of mounting a JSON key.
+
+services:
+  ai-worker:
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/var/secrets/google/gcp-vertex-sa.json
+    volumes:
+      - ./secrets/gcp-vertex-sa.json:/var/secrets/google/gcp-vertex-sa.json:ro

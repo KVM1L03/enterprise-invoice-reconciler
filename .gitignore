@@ -46,6 +46,7 @@ coverage.xml
 .env
 .env.*
 !.env.example
+secrets/
 
 # direnv
 .envrc
@@ -69,6 +70,7 @@ mock_data/**/*.pdf
 
 # Cursor local project metadata (keep team rules in-repo if you add them under a tracked path)
 .cursor/
+.claude/settings.local.json
 
 # --- Logs & temp ---
 *.log

@@ -93,16 +93,30 @@ You'll need the following installed on your machine:
 - 🐳 **Docker** & **Docker Compose** — for the backend stack (Postgres, Temporal, FastAPI, AI worker)
 - 📦 **[uv](https://github.com/astral-sh/uv)** — fast Python package manager (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 - 🟢 **Node.js 20+** & **npm** — for the Next.js frontend
-- 🔑 An LLM API key (OpenAI, Anthropic, or Google Gemini)
+- 🔑 GCP access to Gemini Enterprise / Vertex AI (recommended) or legacy LLM API keys
+  - For local Docker + Gemini Enterprise, place your service-account JSON at `secrets/gcp-vertex-sa.json`.
 
 ---
 
 ## ⚡ Quick Start (TL;DR)
 
-**Fresh clone — one command:**
+**Fresh clone with Gemini Enterprise / Vertex AI — recommended local path:**
 
 ```bash
-cp .env.example .env    # then paste your LLM API key(s)
+cp .env.example .env    # then fill Vertex AI project settings or switch LLM_PROVIDER=api_keys
+mkdir -p secrets
+cp /path/to/service-account.json secrets/gcp-vertex-sa.json
+make install
+make seed
+make up-build-vertex
+make frontend
+```
+
+`make up-build-vertex` uses `docker-compose.vertex.example.yml` so the `ai-worker` container can read the mounted service-account JSON.
+
+**Legacy API-key users** can still use:
+
+```bash
 make bootstrap
 ```
 
@@ -112,7 +126,13 @@ make bootstrap
 3. Brings up the full Docker stack (Temporal, Postgres, FastAPI, AI worker, Langfuse + its deps)
 4. Starts the Next.js dev server in the foreground
 
-**Subsequent runs** — deps and seed are already in place:
+**Subsequent Gemini Enterprise runs** — deps and seed are already in place:
+
+```bash
+make dev-vertex
+```
+
+**Subsequent legacy/API-key runs:**
 
 ```bash
 make dev
@@ -133,7 +153,19 @@ Then open:
 Create a `.env` file in the **project root** (used by FastAPI and the AI worker via Docker `env_file`):
 
 ```bash
-# LLM Provider (at least one is required)
+# LLM Provider — production default is Gemini Enterprise / Vertex AI via GCP IAM
+LLM_PROVIDER=vertex_ai
+VERTEXAI_PROJECT=your-gcp-project-id
+VERTEXAI_LOCATION=europe-west4
+# Optional model overrides. Defaults are provider-aware:
+#   vertex_ai -> vertex_ai/gemini-2.5-flash for both primary and fast paths
+#   api_keys  -> best available legacy model based on populated API keys
+# PRIMARY_LLM_MODEL=vertex_ai/gemini-2.5-flash
+# FAST_LLM_MODEL=vertex_ai/gemini-2.5-flash
+# Set only when using a mounted service-account JSON file.
+# GOOGLE_APPLICATION_CREDENTIALS=/var/secrets/google/gcp-vertex-sa.json
+
+# Legacy / fallback API-key providers (only used when LLM_PROVIDER=api_keys)
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 GEMINI_API_KEY=AIza...
@@ -141,7 +173,7 @@ GEMINI_API_KEY=AIza...
 # LLM Observability — self-hosted Langfuse (docker-compose runs it on port 3030)
 LANGFUSE_PUBLIC_KEY=pk-lf-...
 LANGFUSE_SECRET_KEY=sk-lf-...
-LANGFUSE_BASE_URL=http://langfuse:3000
+LANGFUSE_BASE_URL=http://localhost:3030
 
 # Langfuse container secrets (generate each with: openssl rand -hex 32)
 LANGFUSE_NEXTAUTH_SECRET=<openssl rand -hex 32>
@@ -151,6 +183,23 @@ LANGFUSE_ENCRYPTION_KEY=<64 hex chars>
 # Temporal (defaults to host networking)
 TEMPORAL_ADDRESS=temporal:7233
 ```
+
+For local host runs, authenticate with Application Default Credentials:
+
+```bash
+gcloud auth application-default login
+gcloud config set project your-gcp-project-id
+```
+
+For Docker Compose development with a service-account JSON key, keep the key out of git and use the Vertex Makefile targets:
+
+```bash
+mkdir -p secrets
+cp /path/to/service-account.json secrets/gcp-vertex-sa.json
+make up-build-vertex
+```
+
+The Docker Compose services override `LANGFUSE_BASE_URL` to `http://langfuse:3000` internally, so keep the root `.env` value as `http://localhost:3030` for host-side tools and documentation. Production deployments should prefer Workload Identity or a runtime-bound service account over JSON keys. The service account needs `roles/aiplatform.user`; add scoped Storage permissions only if you later move invoices to GCS.
 
 Create `frontend/.env.local` for Prisma to reach Postgres (the same container Temporal uses, but in a dedicated database):
 
@@ -202,6 +251,14 @@ This script:
 
 ### Step 4 — Start the backend
 
+For Gemini Enterprise / Vertex AI with a local service-account JSON:
+
+```bash
+make up-build-vertex
+```
+
+For legacy API-key providers or host-level ADC:
+
 ```bash
 make up-build
 ```
@@ -209,7 +266,8 @@ make up-build
 Or manually:
 
 ```bash
-docker compose up --build -d
+docker compose -f docker-compose.yml -f docker-compose.vertex.example.yml up --build -d  # Vertex JSON override
+docker compose up --build -d                                                       # legacy/API-key path
 ```
 
 This brings up the full backend stack:
@@ -232,8 +290,8 @@ This brings up the full backend stack:
 Wait ~20 seconds for Temporal and Langfuse to finish provisioning, then verify health:
 
 ```bash
-make ps
-curl http://localhost:8000/health
+make ps-vertex   # or `make ps` for the non-Vertex compose path
+curl -I http://localhost:8000/docs
 ```
 
 ---
@@ -293,6 +351,16 @@ openssl rand -hex 32  # → LANGFUSE_SALT
 openssl rand -hex 32  # → LANGFUSE_ENCRYPTION_KEY (must be 64 hex chars)
 ```
 
+For Gemini Enterprise / Vertex AI cost tracking, add a Langfuse custom model definition if traces show token usage but `cost = 0`:
+
+```text
+Match pattern: ^(vertex_ai/)?gemini-2\.5-flash$
+input:  0.00000030  # $0.30 / 1M tokens
+output: 0.00000250  # $2.50 / 1M tokens
+```
+
+Langfuse applies pricing to new generations ingested after the model definition is saved.
+
 ---
 
 ## 🧪 End-to-end test
@@ -334,7 +402,10 @@ openssl rand -hex 32  # → LANGFUSE_ENCRYPTION_KEY (must be 64 hex chars)
 │   ├── prisma/schema.prisma# Batch + Invoice models
 │   └── prisma.config.ts    # Prisma 7 CLI configuration
 ├── mock_data/              # Sample invoices + processed buckets (approved/, discrepancy/)
+├── tests/                  # Pytest suite for LLM routing, DSPy integration, MCP tools
 ├── docker-compose.yml      # Full backend stack
+├── docker-compose.vertex.example.yml # Local Vertex/Gemini service-account override
+├── frontend/.env.example   # Frontend DATABASE_URL + API gateway template
 ├── seed_data.py            # ⚠️ Run first to bootstrap mock data
 └── pyproject.toml          # Python deps managed by uv
 ```
@@ -353,10 +424,15 @@ The `Makefile` provides shortcuts for common workflows:
 | `make seed` | Regenerate mock PDFs + `erp_mock.db` |
 | `make up` | Start Docker stack without rebuild |
 | `make up-build` | Start Docker stack with rebuild |
+| `make up-vertex` | Start Docker stack with Gemini Enterprise / Vertex service-account override |
+| `make up-build-vertex` | Start Docker stack with rebuild and Vertex override |
 | `make down` | Stop all containers (volumes preserved) |
+| `make dev-vertex` | Docker stack with Vertex override + Next.js dev server |
 | `make frontend` | Run Next.js dev server only (assumes Docker stack is running) |
 | `make logs` | Follow Docker Compose logs |
+| `make logs-vertex` | Follow logs using the Vertex compose override |
 | `make ps` | List running containers |
+| `make ps-vertex` | List running containers using the Vertex compose override |
 | `make db-push` | Generate Prisma client + sync schema to Postgres |
 
 ---
@@ -365,9 +441,10 @@ The `Makefile` provides shortcuts for common workflows:
 
 ```bash
 # Backend
-docker compose up --build -d        # Bring up all services
-docker compose logs -f ai-worker    # Tail the AI worker
-docker compose down                 # Stop everything (volumes preserved)
+docker compose -f docker-compose.yml -f docker-compose.vertex.example.yml up --build -d  # Gemini Enterprise / Vertex local Docker
+docker compose up --build -d                                                   # Legacy/API-key Docker path
+docker compose logs -f ai-worker                                                # Tail the AI worker
+docker compose down                                                             # Stop everything (volumes preserved)
 
 # Python (local)
 uv sync                             # Install / update dependencies

@@ -3,7 +3,7 @@
 
 ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 
-.PHONY: help bootstrap install seed up up-build down dev frontend logs ps db-push postgres-wait langfuse-db-create
+.PHONY: help bootstrap install seed up up-build up-vertex up-build-vertex down dev dev-vertex frontend logs logs-vertex ps ps-vertex db-push postgres-wait langfuse-db-create
 
 .DEFAULT_GOAL := help
 
@@ -16,10 +16,15 @@ help:
 	@echo "  make seed       — regenerate mock PDFs + erp_mock.db"
 	@echo "  make up         — Postgres + ensure DB langfuse, then docker compose up -d"
 	@echo "  make up-build   — same as up with --build (images + Langfuse v3 stack)"
+	@echo "  make up-vertex  — same as up, with Gemini Enterprise / Vertex service-account override"
+	@echo "  make up-build-vertex — same as up-build, with Gemini Enterprise / Vertex override"
+	@echo "  make dev-vertex — Vertex override stack (rebuild) then Next.js dev server"
 	@echo "  make down       — docker compose down"
 	@echo "  make frontend   — only Next.js (expects stack already running)"
 	@echo "  make logs       — follow docker compose logs"
+	@echo "  make logs-vertex — follow logs using the Vertex compose override"
 	@echo "  make ps         — docker compose ps"
+	@echo "  make ps-vertex  — docker compose ps using the Vertex compose override"
 	@echo "  make db-push    — prisma generate + db push (frontend; needs DATABASE_URL)"
 	@echo ""
 	@echo "Docker stack includes: Temporal, API gateway, AI worker, Langfuse v3 (web + worker),"
@@ -31,7 +36,7 @@ help:
 	@echo "  API docs        http://localhost:8000/docs"
 	@echo ""
 	@echo "Frontend: frontend/.env.local — DATABASE_URL for Prisma dashboard."
-	@echo "Backend:  root .env — LLM keys + LANGFUSE_* (PUBLIC_KEY/SECRET_KEY from Langfuse project,"
+	@echo "Backend:  root .env — LLM provider config + LANGFUSE_* (PUBLIC_KEY/SECRET_KEY from Langfuse project,"
 	@echo "          LANGFUSE_NEXTAUTH_SECRET, LANGFUSE_SALT, LANGFUSE_ENCRYPTION_KEY, optional"
 	@echo "          LANGFUSE_REDIS_AUTH, LANGFUSE_MINIO_ROOT_PASSWORD, LANGFUSE_CLICKHOUSE_*)."
 
@@ -72,17 +77,36 @@ up-build:
 	@$(MAKE) postgres-wait langfuse-db-create
 	cd "$(ROOT)" && docker compose up -d --build
 
+up-vertex:
+	cd "$(ROOT)" && docker compose -f docker-compose.yml -f docker-compose.vertex.example.yml up -d postgres
+	@$(MAKE) postgres-wait langfuse-db-create
+	cd "$(ROOT)" && docker compose -f docker-compose.yml -f docker-compose.vertex.example.yml up -d
+
+up-build-vertex:
+	cd "$(ROOT)" && docker compose -f docker-compose.yml -f docker-compose.vertex.example.yml up -d postgres
+	@$(MAKE) postgres-wait langfuse-db-create
+	cd "$(ROOT)" && docker compose -f docker-compose.yml -f docker-compose.vertex.example.yml up -d --build
+
 down:
 	cd "$(ROOT)" && docker compose down
 
 logs:
 	cd "$(ROOT)" && docker compose logs -f
 
+logs-vertex:
+	cd "$(ROOT)" && docker compose -f docker-compose.yml -f docker-compose.vertex.example.yml logs -f
+
 ps:
 	cd "$(ROOT)" && docker compose ps
 
+ps-vertex:
+	cd "$(ROOT)" && docker compose -f docker-compose.yml -f docker-compose.vertex.example.yml ps
+
 # Full stack in one terminal: infra in background, UI in foreground
 dev: up-build
+	cd "$(ROOT)/frontend" && npm run dev
+
+dev-vertex: up-build-vertex
 	cd "$(ROOT)/frontend" && npm run dev
 
 frontend:
