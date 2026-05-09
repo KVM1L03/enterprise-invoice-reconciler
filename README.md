@@ -53,65 +53,47 @@ Every decision is **explainable** (traced), **durable** (Temporal-replayable), a
 
 ```mermaid
 graph TB
-    subgraph Frontend["Frontend — Next.js 16 + React 19"]
-        UI[Dashboard]
-        Reports[FinOps Reports]
-    end
+    User([User])
+    UI[Web Dashboard]
+    API[API Gateway]
+    WF[Workflow Engine]
+    AI[AI Brain]
+    ERP[(Company ERP)]
+    DB[(History Database)]
+    Watch[Monitoring]
 
-    subgraph Edge["Edge — FastAPI"]
-        Gateway[api_gateway/]
-    end
+    User --> UI
+    UI --> API
+    API --> WF
+    WF --> AI
+    AI --> ERP
+    WF --> DB
+    AI -.-> Watch
+    WF -.-> Watch
 
-    subgraph Orchestration["Orchestration — Temporal"]
-        WF[BatchReconciliationWorkflow]
-        A1[process_invoice_activity]
-        A2[route_invoice_file_activity]
-    end
-
-    subgraph AI["AI layer"]
-        DSPy[dspy_engine — extraction]
-        Graph[agent_graph — LangGraph]
-    end
-
-    subgraph Data["Zero-trust data — MCP"]
-        MCP[mcp_bridge/]
-        ERP[(SQLite ERP mock)]
-    end
-
-    subgraph Persistence["Persistence"]
-        AppDB[(Postgres · invoice_app)]
-        TempDB[(Postgres · temporal)]
-    end
-
-    subgraph Obs["Observability"]
-        LF[Langfuse · LLM traces]
-        TUI[Temporal UI · workflow replays]
-    end
-
-    UI -->|Server Action| Gateway
-    Reports -->|/telemetry/finops| Gateway
-    Gateway -->|gRPC| WF
-    WF --> A1
-    WF --> A2
-    A1 --> DSPy
-    A1 --> Graph
-    Graph -->|MCP stdio| MCP
-    MCP --> ERP
-    UI -.->|Prisma| AppDB
-    WF -.-> TempDB
-    DSPy -.->|OTel spans| LF
-    Graph -.->|OTel spans| LF
-    WF -.-> TUI
-
-    classDef edge fill:#e0f2fe,stroke:#0284c7
+    classDef user fill:#f1f5f9,stroke:#475569
+    classDef app fill:#e0f2fe,stroke:#0284c7
     classDef ai fill:#fef3c7,stroke:#ca8a04
     classDef data fill:#fce7f3,stroke:#be185d
     classDef obs fill:#dcfce7,stroke:#16a34a
-    class Gateway edge
-    class DSPy,Graph ai
-    class MCP,ERP data
-    class LF,TUI obs
+    class User user
+    class UI,API,WF app
+    class AI ai
+    class ERP,DB data
+    class Watch obs
 ```
+
+**What each box does:**
+
+| Box | Plain English | Code location |
+|---|---|---|
+| Web Dashboard | Where the user uploads invoices and sees results | `frontend/` |
+| API Gateway | Receives uploads, kicks off processing | `api_gateway/` |
+| Workflow Engine | Runs the work reliably — retries on failure, never loses an invoice mid-process | `ai_worker/workflows.py` |
+| AI Brain | Reads the PDF, understands it, decides if it matches | `ai_worker/dspy_engine.py` + `ai_worker/agent_graph.py` |
+| Company ERP | The source of truth — what each invoice *should* cost | `mcp_bridge/` (zero-trust gateway to the DB) |
+| History Database | Stores every decision so you can audit it later | Postgres + Prisma |
+| Monitoring | Records every AI call, cost, and workflow step | Langfuse + Temporal UI |
 
 ### Tech stack
 
@@ -144,36 +126,34 @@ This is what happens when you drop a single PDF into the dashboard. Every arrow 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant U as User (Dashboard)
-    participant FE as Next.js Server Action
-    participant GW as FastAPI Gateway
-    participant T as Temporal
-    participant W as ai_worker
-    participant DSPy as DSPy Engine
-    participant LG as LangGraph Agent
-    participant MCP as MCP Bridge
-    participant ERP as ERP (SQLite)
-    participant LF as Langfuse
+    participant User
+    participant App as Web App
+    participant Worker as Workflow Engine
+    participant AI as AI Brain
+    participant ERP as Company ERP
 
-    U->>FE: Upload PDF
-    FE->>GW: POST /reconcile (multipart)
-    GW->>T: Start BatchReconciliationWorkflow
-    T->>W: Execute process_invoice_activity
-    W->>LF: start_observation("invoice_reconciliation")
-    W->>DSPy: extract(invoice_text)
-    DSPy-->>LF: span: gen_ai.request (model, tokens, cost)
-    DSPy-->>W: InvoiceData (Pydantic strict)
-    W->>LG: ainvoke({raw_text})
-    LG->>MCP: verify_purchase_order(invoice_id, amount)
-    MCP->>ERP: SELECT expected_amount WHERE id=?
-    ERP-->>MCP: 16817.50
-    MCP-->>LG: {status: "discrepancy", diff: 50.00}
-    LG-->>W: ReconciliationDecision
-    W->>T: route_invoice_file_activity(decision)
-    T-->>GW: Workflow complete
-    GW-->>FE: {status: "DISCREPANCY", reason, erp_expected_amount}
-    FE-->>U: Live status + persisted in Postgres
+    User->>App: Uploads invoice PDF
+    App->>Worker: Start reconciliation
+    Worker->>AI: Read this invoice
+    AI-->>Worker: Invoice says 16,867.50
+    Worker->>AI: Compare with ERP
+    AI->>ERP: What should this cost?
+    ERP-->>AI: Should be 16,817.50
+    AI-->>Worker: Mismatch of 50.00
+    Worker-->>App: DISCREPANCY found
+    App-->>User: Shows result with reason
 ```
+
+**In words:**
+
+1. User uploads a PDF invoice.
+2. The Workflow Engine takes over so nothing gets lost if the system restarts.
+3. The AI reads the PDF and pulls out vendor, amount, invoice number.
+4. The AI asks the company ERP: *"what should this invoice cost?"*
+5. If the numbers match → **APPROVED**. If they don't → **DISCREPANCY** with the exact dollar gap. If anything looks suspicious → **HUMAN_REVIEW_NEEDED**.
+6. Result lands back in the dashboard, and is permanently saved for audit.
+
+If anything fails along the way (network blip, AI rate-limited, etc.), the Workflow Engine automatically retries from where it stopped — the user doesn't have to re-upload anything.
 
 **Failure semantics:**
 
@@ -190,33 +170,21 @@ Two non-overlapping layers. **Don't conflate them** — they answer different qu
 
 ```mermaid
 graph LR
-    subgraph App["Application code"]
-        D[DSPy module]
-        L[LiteLLM client]
-        T[Temporal Workflow]
-    end
+    AI[AI Brain] -->|sends every call| LF[Langfuse]
+    WF[Workflow Engine] -->|sends every step| TUI[Temporal UI]
 
-    subgraph OTel["OpenTelemetry pipeline"]
-        OI[OpenInference attrs]
-        TP[OTel TracerProvider]
-    end
-
-    subgraph Backends["Observability backends"]
-        LF[Langfuse · LLM-specific]
-        TUI[Temporal UI · workflow-specific]
-    end
-
-    D -->|@observe + instrument| OI
-    L -->|LiteLLMInstrumentor| OI
-    OI --> TP
-    TP -->|OTLP HTTP| LF
-    T -->|gRPC| TUI
+    LF --- LFNote[How much did the AI cost? What did it answer? Was it slow?]
+    TUI --- TUINote[Did the workflow finish? Where is it stuck? Why did it retry?]
 
     classDef ai fill:#fef3c7,stroke:#ca8a04
     classDef wf fill:#dcfce7,stroke:#16a34a
-    class LF ai
-    class TUI wf
+    classDef note fill:#f8fafc,stroke:#cbd5e1,color:#475569
+    class AI,LF ai
+    class WF,TUI wf
+    class LFNote,TUINote note
 ```
+
+Both monitors run side-by-side — they answer different questions, neither replaces the other.
 
 ### Layer 1 — LLM observability via Langfuse
 
