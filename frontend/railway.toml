@@ -6,15 +6,15 @@
 # We deliberately use Nixpacks (not Dockerfile) for the frontend because:
 # - It has no Dockerfile and we don't want to maintain one just for Railway.
 # - Nixpacks auto-detects Next.js 16 + npm and runs `npm ci && npm run build`.
-# - Prisma's "postinstall" hook generates the client during install.
+# - `npm run build` runs `prisma generate && next build` so @prisma/client model
+#   types exist during `tsc` on Railway (they are not bundled without generate).
 #
 # ``nixpacks.toml`` in this directory pins a fresh nixpkgs archive so
 # ``NIXPACKS_NODE_VERSION=22`` resolves to a Prisma-compatible patch (>= 22.12).
 
 [build]
 builder = "NIXPACKS"
-# `prisma generate` happens automatically via the postinstall hook when
-# @prisma/client is in dependencies; no extra build command needed.
+# Client generation is wired in package.json ``build`` script (``prisma generate && next build``).
 
 [deploy]
 # `npm start` runs `next start` which respects $PORT (Next.js 13+ default).
