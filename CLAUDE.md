@@ -20,9 +20,28 @@ uv run uvicorn api_gateway.main:app --reload
 
 # Run the MCP bridge server
 uv run python -m mcp_bridge.server
-```
 
-No test suite exists yet. When adding tests, use `uv run pytest`.
+# Seed / reset the mock ERP database
+uv run python -m mcp_bridge.init_db
+
+# Run tests
+uv run pytest tests/
+uv run pytest --cov=. --cov-report=term-missing   # with coverage
+
+# Lint (Python)
+uv run ruff check .
+
+# Promptfoo eval suite (zero API cost by default via mock provider)
+npx promptfoo eval
+npx promptfoo view                # open results in browser
+
+# LLM-as-judge evals (set EVAL_DRY_RUN=1 for deterministic/free run)
+EVAL_DRY_RUN=1 uv run python evals/llm_judge_evals.py
+
+# Frontend
+cd frontend && npm ci && npm run lint
+cd frontend && npm run dev        # dev server on http://localhost:3000
+```
 
 ## Architecture
 
@@ -52,7 +71,9 @@ Invoice → api_gateway → Temporal workflow (ai_worker)
 - **DSPy** for structured LLM output (invoice field extraction)
 - **LangGraph** for the reconciliation agent graph
 - **FastMCP** for exposing ERP lookups as MCP tool calls
-- **Langfuse** for LLM observability
+- **Langfuse** for LLM observability (cost, prompt tracking, evals)
+- **Promptfoo** + **LLM-as-judge** for offline eval suite (`evals/`)
+- **Next.js 15** (App Router) frontend in `frontend/`
 - Python >=3.12, managed with **uv**
 
 ## Architecture Rules
@@ -67,6 +88,34 @@ Invoice → api_gateway → Temporal workflow (ai_worker)
 
 - Shared data models live in `shared/schemas.py` and are imported by other packages — keep them as the single source of truth.
 - `mock_data/invoices/` holds sample invoice files for development/testing.
+- Frontend shared utilities live in `frontend/src/lib/`. The `formatUsd()` function in `format.ts` uses adaptive precision (2/4/6 decimal places) so sub-dollar LLM costs like `$0.0034` never silently round to `$0.00`.
+- The `.gitignore` has a `!frontend/src/lib/` negative pattern to prevent the Python `lib/` venv rule from swallowing frontend source files. Do not remove this.
+- Eval fixtures live in `evals/fixtures/` (plain-text invoices used by the mock Promptfoo provider).
+
+## CI / Testing
+
+Three parallel GitHub Actions jobs (`.github/workflows/ci.yml`):
+
+| Job | Tool | Cache key |
+|-----|------|-----------|
+| `python-lint` | `ruff check .` | `uv.lock` via `astral-sh/setup-uv@v5` |
+| `python-test` | `pytest --cov` + Codecov upload | `uv.lock` |
+| `frontend-lint` | `eslint` | `frontend/package-lock.json` via `actions/setup-node@v4 cache:'npm'` |
+
+The `conftest.py` session fixture calls `init_db()` before any test runs, so `erp_mock.db` is always present in CI (it is gitignored and must not be committed).
+
+## Eval Suite
+
+Two complementary eval layers:
+
+1. **Promptfoo** (`promptfooconfig.yaml` + `evals/mock_dspy_provider.py`) — zero API cost. The mock provider regex-matches the invoice ID from the prompt and returns pre-baked fixture JSON. Run: `npx promptfoo eval`.
+2. **LLM-as-judge** (`evals/llm_judge_evals.py`) — uses `litellm.acompletion` with a real judge model (`JUDGE_MODEL`, default `claude-haiku-4-5-20251001`). Set `EVAL_DRY_RUN=1` for a deterministic, free dry-run that applies business rules locally without calling any LLM.
+
+## Known Gotchas
+
+- **Langfuse cost shows $0**: The `vertex_ai/gemini-2.5-flash` model name does not match Langfuse's default pricing table. Fix in Langfuse UI: Settings → Models → Add custom model with regex `^(vertex_ai/)?gemini-2\.5-flash$`, input price `0.0000003`, output price `0.0000025`.
+- **`erp_mock.db` missing**: Run `uv run python -m mcp_bridge.init_db` to seed it. Never commit the `.db` file.
+- **Temporal workflow stuck**: If activities stop processing, a soft restart (`docker compose down && docker compose up --build`) resolves it without data loss.
 
 ## Anti-Patterns & Concurrency Rules
 
