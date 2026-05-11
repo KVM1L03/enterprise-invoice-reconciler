@@ -2,6 +2,7 @@
 
 import { AlertTriangle, Inbox, Loader2, Trash2 } from "lucide-react";
 
+import type { Invoice } from "@prisma/client";
 import type { RecentBatch, ReviewTarget, WorkflowResult } from "@/types";
 
 import { Pagination } from "./Pagination";
@@ -12,7 +13,7 @@ const CARD_SHADOW = "shadow-[0_12px_40px_rgba(25,28,30,0.04)]";
 
 function batchToWorkflowResult(batch: RecentBatch): WorkflowResult {
   const result: WorkflowResult = {};
-  batch.invoices.forEach((inv, idx) => {
+  batch.invoices.forEach((inv: Invoice, idx: number) => {
     result[`invoice_${idx}`] = {
       id: inv.id,
       invoice_id: inv.invoiceId,
