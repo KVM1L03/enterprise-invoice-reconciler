@@ -46,19 +46,34 @@ services from this GitHub repo. Railway will detect the per-service config:
 | Service | Root directory | Config | Builder |
 |---|---|---|---|
 | `api-gateway` | `/` | `railway.toml` | Dockerfile |
-| `ai-worker`   | `/` | (override start command — see below) | Dockerfile |
+| `ai-worker`   | `/` | `railway.ai-worker.toml` *(recommended)* or dashboard start | Dockerfile |
 | `frontend`    | `/frontend` | `frontend/railway.toml` | Nixpacks |
 
-The `ai-worker` service reuses the root `Dockerfile` but needs a different
-start command. In the dashboard:
+Root `railway.toml` **omits `startCommand`** on purpose: Railway config-as-code
+always overrides the dashboard; one file cannot hold two different commands for
+two services on the same repo root.
 
-> Service Settings → Deploy → Custom Start Command:
-> ```
-> uv run python -m ai_worker.worker
-> ```
+**api-gateway** → Service Settings → Deploy → **Custom Start Command**:
 
-No healthcheck path for the worker — Railway treats long-running processes
-that don't bind a port as healthy by default.
+```bash
+sh -c "exec uv run uvicorn api_gateway.main:app --host 0.0.0.0 --port ${PORT}"
+```
+
+**api-gateway** → set **Healthcheck** path to `/docs` in the dashboard (not in
+shared TOML — it would wrongly apply to every service using that file).
+
+**ai-worker** (pick one):
+
+1. **Recommended:** Settings → *Config as code* → config file path **`/railway.ai-worker.toml`** (worker `startCommand` lives in git).
+
+2. Or leave the default `railway.toml` and set **Custom Start Command** to:
+
+```bash
+uv run python -m ai_worker.worker
+```
+
+Clear **Pre-deploy Command** on the worker unless you have a real pre-step
+(migrations, etc.) — do not run the worker there.
 
 ### Self-hosted Temporal on Railway (fourth service)
 

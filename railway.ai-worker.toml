@@ -1,0 +1,15 @@
+# Temporal worker — use via Railway Settings → Config as code → path:
+# ``/railway.ai-worker.toml`` on the ai-worker service (same root directory ``/``).
+#
+# Leaves root ``railway.toml`` for api-gateway-style settings while fixing the worker
+# start command in-repo (Railway: file overrides dashboard).
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "uv run python -m ai_worker.worker"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+numReplicas = 1

@@ -1,48 +1,28 @@
-# Railway service config — API gateway (FastAPI).
+# Railway config-as-code for services using repo root ``/`` (same Dockerfile).
 #
-# Railway models each service with its own railway.toml (or railway.json).
-# This file is consumed by the SERVICE whose "Root Directory" is set to "/"
-# in the Railway dashboard. The Next.js frontend has its own config at
-# frontend/railway.toml.
+# Railway rule: values in this file *always* override the dashboard. A single
+# shared ``railway.toml`` cannot carry two different ``startCommand`` values
+# (api-gateway vs ai-worker), so ``startCommand`` is intentionally omitted here.
 #
-# The ai-worker (Temporal worker) runs the same Docker image with a
-# different startCommand. Create a separate Railway service, point it at
-# root "/", and override the start command per the snippet in docs/RAILWAY.md.
+# Set per service in the dashboard (Deploy → Custom Start Command):
+#   api-gateway: sh -c "exec uv run uvicorn api_gateway.main:app --host 0.0.0.0 --port ${PORT}"
+#   ai-worker:   uv run python -m ai_worker.worker
+#
+# Optional: point the ai-worker service at ``railway.ai-worker.toml`` (Settings →
+# config file path) so the worker start command lives in git without relying on
+# the dashboard. The Next.js frontend keeps ``frontend/railway.toml``.
 
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-# Railway sets PORT in the environment. Uvicorn is invoked directly from
-# Dockerfile CMD startCommand and does not treat ``$PORT`` as shell
-# substitution, so wrap in ``sh`` with double quotes for expansion.
-#
-# Ai-worker must override startCommand in Railway (dashboard) to ``uv run
-# python -m ai_worker.worker`` since this file targets the gateway only.
-startCommand = "sh -c \"exec uv run uvicorn api_gateway.main:app --host 0.0.0.0 --port ${PORT}\""
+# Health checks are not declared here — they would apply to every service using
+# this file. api-gateway → set ``/docs`` under Deploy → Healthcheck in Railway.
 
-# /docs is FastAPI's Swagger UI — always 200 once the app boots. A
-# dedicated /healthz is the right long-term move; /docs is fine to ship.
-healthcheckPath = "/docs"
-healthcheckTimeout = 100
-
-# Backoff-restart instead of crashing the service on transient Temporal
-# disconnects — the FastAPI lifespan eagerly connects to Temporal at
-# startup, which can fail if the worker boots first.
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
 numReplicas = 1
 
-# Persistent volume mount.
-# IMPORTANT: Railway's volume *creation* is done via the dashboard
-# (Service → Settings → Volumes → New Volume → mount at /app/data) or
-# the Railway CLI (`railway volume create`). Once attached, the volume
-# persists /app/data across deploys. The DATA_DIR env var below tells
-# the app to put SQLite + PDFs there instead of the ephemeral repo root.
-#
-# Some Railway plans accept [[deploy.volumes]] in TOML directly:
-# [[deploy.volumes]]
-# mountPath = "/app/data"
-# Leave it commented unless your project supports it — dashboard config
-# is the canonical path and won't conflict with this file.
+# Persistent volume mount — create in the dashboard (Service → Volumes) at ``/app/data``.
+# DATA_DIR=/app/data in env. Some plans support [[deploy.volumes]] — see Railway docs.
