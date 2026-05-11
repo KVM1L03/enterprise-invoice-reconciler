@@ -1,24 +1,31 @@
 """FastMCP server exposing ERP purchase-order verification as an MCP tool."""
 
 import logging
-from pathlib import Path
 
 import aiosqlite
 from fastmcp import FastMCP
 
+from shared.paths import ERP_DB_PATH as DB_PATH
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).resolve().parent / "erp_mock.db"
+GLOBAL_TENANT = "global"
 
 mcp = FastMCP("ERP-Bridge")
 
 
 @mcp.tool()
 async def verify_purchase_order(
-    invoice_id: str, amount: float
+    invoice_id: str,
+    amount: float,
+    session_id: str = GLOBAL_TENANT,
 ) -> dict[str, object]:
     """Check an invoice total against the ERP purchase-order record.
+
+    ``session_id`` scopes the lookup to a single tenant. The dev/local
+    tenant is ``"global"``; demo sessions pass their own ``demo_<uuid>``
+    so recruiters never see each other's seeded data.
 
     Returns a dict with 'status' ("match", "discrepancy", "not_found", or
     "error") plus relevant detail fields.
@@ -26,8 +33,9 @@ async def verify_purchase_order(
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
-                "SELECT expected_amount FROM purchase_orders WHERE id = ?",
-                (invoice_id,),
+                "SELECT expected_amount FROM purchase_orders "
+                "WHERE id = ? AND session_id = ?",
+                (invoice_id, session_id),
             )
             row = await cursor.fetchone()
     except aiosqlite.Error:

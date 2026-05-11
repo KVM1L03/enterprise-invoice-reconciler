@@ -10,8 +10,11 @@ model Batch {
   id         String   @id @default(cuid())
   workflowId String   @unique
   status     String
+  sessionId  String?  // "demo_<uuid>" for demo tenants; null/"global" for local dev
   createdAt  DateTime @default(now())
   invoices   Invoice[]
+
+  @@index([sessionId])
 }
 
 model Invoice {

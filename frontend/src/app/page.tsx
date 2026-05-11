@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { FolderOpen, Loader2 } from "lucide-react";
 
 import {
+  bootstrapDemoSession,
   clearAllBatches,
   getDashboardStats,
   getRecentBatches,
@@ -23,9 +24,16 @@ import type {
 
 const PAGE_SIZE = 1;
 
-const API = "http://localhost:8000";
+// NEXT_PUBLIC_API_URL is inlined at build time. Set it in Railway's frontend
+// service (e.g. https://api-gateway-production.up.railway.app); falls back to
+// localhost so local dev keeps working without extra config.
+const API =
+  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "http://localhost:8000";
+const DEMO_MODE =
+  (process.env.NEXT_PUBLIC_DEMO_MODE ?? "false").toLowerCase() === "true";
 
 export default function DashboardPage() {
+  const [demoSessionId, setDemoSessionId] = useState<string | null>(null);
   const [workflowId, setWorkflowId] = useState<string | null>(null);
   const [polling, setPolling] = useState(false);
   const [result, setResult] = useState<WorkflowResult | null>(null);
@@ -63,6 +71,24 @@ export default function DashboardPage() {
   useEffect(() => {
     void loadDashboard(1);
   }, [loadDashboard]);
+
+  // Demo bootstrap: mint or reuse the session_id cookie, then keep it in
+  // React state so client-side fetches can attach X-Session-Id.
+  useEffect(() => {
+    if (!DEMO_MODE) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const session = await bootstrapDemoSession();
+        if (!cancelled && session) setDemoSessionId(session.session_id);
+      } catch (e) {
+        console.error("Failed to bootstrap demo session", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handlePageChange = useCallback(
     (page: number) => {
@@ -109,7 +135,12 @@ export default function DashboardPage() {
     stopPolling();
 
     try {
-      const res = await fetch(`${API}/reconcile-batch`, { method: "POST" });
+      const headers: Record<string, string> = {};
+      if (demoSessionId) headers["X-Session-Id"] = demoSessionId;
+      const res = await fetch(`${API}/reconcile-batch`, {
+        method: "POST",
+        headers,
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setWorkflowId(data.workflow_id);
@@ -226,7 +257,12 @@ export default function DashboardPage() {
         />
 
         <section className="space-y-8">
-          <UploadWidget apiBaseUrl={API} polling={polling} />
+          <UploadWidget
+            apiBaseUrl={API}
+            polling={polling}
+            demoMode={DEMO_MODE}
+            sessionId={demoSessionId}
+          />
           <BatchTable
             polling={polling}
             result={result}

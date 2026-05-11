@@ -10,7 +10,8 @@ from langfuse import get_client
 from temporalio import activity
 from temporalio.common import RetryPolicy
 
-from ai_worker.agent_graph import reconciliation_app
+from ai_worker.agent_graph import GLOBAL_TENANT, reconciliation_app
+from shared.paths import MOCK_DATA_DIR as _MOCK_DATA_DIR
 from shared.pdf_utils import extract_text_from_pdf
 
 _langfuse = get_client()
@@ -26,28 +27,29 @@ RECONCILIATION_RETRY_POLICY = RetryPolicy(
 
 
 @activity.defn
-async def process_invoice_activity(file_path: str) -> dict:
+async def process_invoice_activity(file_path: str, session_id: str = GLOBAL_TENANT) -> dict:
     """Load a PDF invoice, extract its text, and run the reconciliation graph.
 
-    The activity reads and parses the PDF (I/O + CPU-bound work is
-    offloaded via ``asyncio.to_thread`` inside ``extract_text_from_pdf``),
-    then feeds the text into the LangGraph pipeline (DSPy extraction ->
-    MCP verification -> decision routing) and returns a serialisable dict
-    suitable for Temporal's gRPC payload format.
+    ``session_id`` is forwarded into the LangGraph state so the MCP call
+    can scope its ERP lookup to a single tenant (demo isolation).
     """
-    logger.info("Starting invoice reconciliation activity for %s", file_path)
+    logger.info(
+        "Starting invoice reconciliation activity for %s (session=%s)",
+        file_path,
+        session_id,
+    )
 
     try:
         with _langfuse.start_as_current_observation(
             as_type="span",
             name="invoice_reconciliation",
-            input={"file_path": file_path},
+            input={"file_path": file_path, "session_id": session_id},
         ) as trace:
             try:
                 extracted_text = await extract_text_from_pdf(file_path)
 
                 final_state = await reconciliation_app.ainvoke(
-                    {"raw_text": extracted_text}
+                    {"raw_text": extracted_text, "session_id": session_id}
                 )
 
                 decision = final_state["final_decision"]
@@ -74,21 +76,29 @@ APPROVED_STATUSES: frozenset[str] = frozenset({"APPROVED"})
 
 
 @activity.defn
-async def route_invoice_file_activity(file_path: str, status: str) -> str:
+async def route_invoice_file_activity(
+    file_path: str,
+    status: str,
+    session_id: str = GLOBAL_TENANT,
+) -> str:
     """Move a processed invoice to approved/ or discrepancy/ based on status.
 
-    APPROVED → mock_data/approved/; every other status → mock_data/discrepancy/.
-    All disk ops are offloaded via ``asyncio.to_thread`` to keep the
-    activity's event loop responsive.
+    Routing layout:
+      global session → mock_data/{approved,discrepancy}/
+      demo session  → mock_data/{approved,discrepancy}/{session_id}/
+
+    Keeping per-session subfolders prevents recruiter PDFs from polluting
+    the shared dirs and lets the cleanup job rmtree a whole session at once.
     """
     source = Path(file_path)
     if not source.is_file():
         logger.error("Cannot route missing file: %s", file_path)
         raise FileNotFoundError(f"Source file not found: {file_path}")
 
-    base_dir = source.parent.parent
-    target_dir_name = "approved" if status in APPROVED_STATUSES else "discrepancy"
-    target_dir = base_dir / target_dir_name
+    bucket = "approved" if status in APPROVED_STATUSES else "discrepancy"
+    target_dir = _MOCK_DATA_DIR / bucket
+    if session_id != GLOBAL_TENANT:
+        target_dir = target_dir / session_id
 
     await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
 
@@ -96,6 +106,10 @@ async def route_invoice_file_activity(file_path: str, status: str) -> str:
     moved = await asyncio.to_thread(shutil.move, str(source), str(target_path))
 
     logger.info(
-        "Routed %s → %s (status=%s)", source.name, target_dir_name, status
+        "Routed %s → %s (status=%s, session=%s)",
+        source.name,
+        target_dir,
+        status,
+        session_id,
     )
     return str(moved)

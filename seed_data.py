@@ -12,10 +12,12 @@ from pathlib import Path
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 
-ROOT = Path(__file__).resolve().parent
-MOCK_DATA_DIR = ROOT / "mock_data"
-INVOICES_DIR = MOCK_DATA_DIR / "invoices"
-DB_PATH = ROOT / "mcp_bridge" / "erp_mock.db"
+from shared.paths import (
+    ERP_DB_PATH as DB_PATH,
+    INVOICES_DIR,
+    MOCK_DATA_DIR,
+    PROJECT_ROOT as ROOT,
+)
 
 VENDOR_POOL = [
     "Acme Corp",

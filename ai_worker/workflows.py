@@ -12,14 +12,24 @@ with workflow.unsafe.imports_passed_through():
         route_invoice_file_activity,
     )
 
+GLOBAL_TENANT = "global"
+
 
 @workflow.defn
 class BatchReconciliationWorkflow:
     """Orchestrates concurrent reconciliation + file routing of a batch of invoices."""
 
     @workflow.run
-    async def run(self, file_paths: list[str]) -> dict:
-        """Phase 1: reconcile invoices. Phase 2: move files to approved/discrepancy."""
+    async def run(
+        self,
+        file_paths: list[str],
+        session_id: str = GLOBAL_TENANT,
+    ) -> dict:
+        """Phase 1: reconcile invoices. Phase 2: move files to approved/discrepancy.
+
+        ``session_id`` propagates through every activity so the MCP lookup
+        and the routing target dir stay scoped to a single tenant.
+        """
 
         # --- Phase 1: Reconciliation (parallel) ---
         tasks: list = []
@@ -27,7 +37,7 @@ class BatchReconciliationWorkflow:
             tasks.append(
                 workflow.execute_activity(
                     process_invoice_activity,
-                    args=[file_path],
+                    args=[file_path, session_id],
                     start_to_close_timeout=timedelta(minutes=5),
                     retry_policy=RECONCILIATION_RETRY_POLICY,
                 )
@@ -54,7 +64,7 @@ class BatchReconciliationWorkflow:
             routing_tasks.append(
                 workflow.execute_activity(
                     route_invoice_file_activity,
-                    args=[file_path, result["status"]],
+                    args=[file_path, result["status"], session_id],
                     start_to_close_timeout=timedelta(seconds=30),
                     retry_policy=RECONCILIATION_RETRY_POLICY,
                 )

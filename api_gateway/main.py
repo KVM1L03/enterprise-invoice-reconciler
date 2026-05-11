@@ -13,20 +13,28 @@ from functools import partial
 from pathlib import Path
 
 import httpx
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from cachetools import TTLCache
-from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from langfuse import Langfuse, get_client
 from langfuse.api.core.api_error import ApiError
 from pydantic import ValidationError
 from temporalio.client import Client, WorkflowExecutionStatus
 from temporalio.service import RPCError
+from typing import Annotated
 
+from api_gateway.demo import (
+    DEMO_CLEANUP_INTERVAL_SECONDS,
+    cleanup_expired_sessions,
+    router as demo_router,
+)
+from api_gateway.deps import GLOBAL_TENANT, get_tenant_id, is_demo_mode
+from shared.paths import INVOICES_DIR, ensure_data_dirs
 from shared.schemas import FinOpsDailyPoint
 
 logger = logging.getLogger(__name__)
 
-INVOICES_DIR = Path(__file__).resolve().parent.parent / "mock_data" / "invoices"
 TASK_QUEUE = "invoice-reconciliation-queue"
 TEMPORAL_ADDRESS = os.environ.get("TEMPORAL_ADDRESS", "localhost:7233")
 
@@ -74,7 +82,21 @@ async def _read_bounded(file: UploadFile, max_bytes: int) -> bytes:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Connect to Temporal and Langfuse once at startup, close on shutdown."""
+    """Connect to Temporal and Langfuse once at startup, close on shutdown.
+
+    When DEMO_MODE=true also boots an APScheduler that prunes demo
+    sessions older than 2 h every 15 min (SQLite rows + filesystem dirs).
+    The Postgres Batch cleanup is handled by scripts/cleanup_demo.sql.
+    """
+    # Ensure the volume's directory layout exists and the canonical ERP
+    # rows are present. ``init_db`` uses INSERT OR REPLACE on global
+    # records only — demo sessions (different session_id) are preserved
+    # across restarts, so this is safe to run on every boot.
+    ensure_data_dirs()
+    from mcp_bridge.init_db import init_db
+
+    await asyncio.to_thread(init_db)
+
     client = await Client.connect(TEMPORAL_ADDRESS)
     app.state.temporal_client = client
     logger.info("Temporal client connected (%s)", TEMPORAL_ADDRESS)
@@ -83,12 +105,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.langfuse = langfuse_client
     logger.info("Langfuse client initialised")
 
+    scheduler: AsyncIOScheduler | None = None
+    if is_demo_mode():
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(
+            cleanup_expired_sessions,
+            "interval",
+            seconds=DEMO_CLEANUP_INTERVAL_SECONDS,
+            id="demo_session_cleanup",
+            max_instances=1,
+            coalesce=True,
+        )
+        scheduler.start()
+        app.state.demo_scheduler = scheduler
+        logger.info(
+            "Demo mode ON — cleanup scheduler running every %ds",
+            DEMO_CLEANUP_INTERVAL_SECONDS,
+        )
+
     yield
 
+    if scheduler is not None:
+        scheduler.shutdown(wait=False)
     langfuse_client.shutdown()
 
 
 app = FastAPI(title="Enterprise Invoice Reconciler", lifespan=lifespan)
+app.include_router(demo_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -99,15 +142,26 @@ app.add_middleware(
 )
 
 
+def _session_invoice_dir(tenant_id: str) -> Path:
+    """Per-tenant invoice dir. ``global`` → flat mock_data/invoices/."""
+    if tenant_id == GLOBAL_TENANT:
+        return INVOICES_DIR
+    return INVOICES_DIR / tenant_id
+
+
 @app.post("/reconcile-batch", status_code=202)
-async def reconcile_batch(request: Request) -> dict:
-    """Fire-and-forget: start a batch reconciliation workflow."""
-    invoice_files = sorted(INVOICES_DIR.glob("*.pdf"))
+async def reconcile_batch(
+    request: Request,
+    tenant_id: Annotated[str, Depends(get_tenant_id)],
+) -> dict:
+    """Fire-and-forget: start a batch reconciliation workflow scoped to ``tenant_id``."""
+    source_dir = _session_invoice_dir(tenant_id)
+    invoice_files = sorted(source_dir.glob("*.pdf"))
 
     if not invoice_files:
         raise HTTPException(
             status_code=404,
-            detail="No PDF invoice files found in mock_data/invoices/",
+            detail=f"No PDF invoice files found in {source_dir}",
         )
 
     # Pass ABSOLUTE PATHS (strings), not file contents — keeps Temporal
@@ -119,27 +173,48 @@ async def reconcile_batch(request: Request) -> dict:
 
     await client.start_workflow(
         "BatchReconciliationWorkflow",
-        args=[file_paths],
+        args=[file_paths, tenant_id],
         id=workflow_id,
         task_queue=TASK_QUEUE,
     )
 
     logger.info(
-        "Started workflow %s with %d PDF invoices", workflow_id, len(file_paths)
+        "Started workflow %s with %d PDF invoices (tenant=%s)",
+        workflow_id,
+        len(file_paths),
+        tenant_id,
     )
     return {"message": "Batch processing started", "workflow_id": workflow_id}
 
 
 @app.post("/upload-invoices", status_code=201)
-async def upload_invoices(files: list[UploadFile] = File(...)) -> dict:
-    """Save one or more uploaded PDF invoices to mock_data/invoices/."""
-    INVOICES_DIR.mkdir(parents=True, exist_ok=True)
+async def upload_invoices(
+    tenant_id: Annotated[str, Depends(get_tenant_id)],
+    files: list[UploadFile] = File(...),
+) -> dict:
+    """Save uploaded PDFs into the caller's per-tenant invoice dir.
+
+    In demo mode this raises 403 because recruiters must not pollute the
+    canonical workspace with unpredictable files (UI also disables the
+    button — this is the server-side enforcement).
+    """
+    if is_demo_mode():
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Uploads are disabled in demo mode. Review the pre-seeded "
+                "discrepancy cases instead."
+            ),
+        )
+
+    target_dir = _session_invoice_dir(tenant_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
 
     saved: list[str] = []
     for file in files:
         filename = _safe_pdf_filename(file.filename)
         content = await _read_bounded(file, MAX_UPLOAD_BYTES)
-        target = INVOICES_DIR / filename
+        target = target_dir / filename
         await asyncio.to_thread(target.write_bytes, content)
         saved.append(filename)
         logger.info("Saved uploaded file: %s (%d bytes)", filename, len(content))

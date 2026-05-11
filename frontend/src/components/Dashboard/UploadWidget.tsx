@@ -12,7 +12,8 @@ import {
 
 import type { UploadInvoicesResponse, UploadToast } from "@/types";
 
-const DEFAULT_API = "http://localhost:8000";
+const DEFAULT_API =
+  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "http://localhost:8000";
 
 const CARD_SHADOW = "shadow-[0_12px_40px_rgba(25,28,30,0.04)]";
 
@@ -21,11 +22,17 @@ export type UploadWidgetProps = {
   apiBaseUrl?: string;
   /** Disables upload controls while batch polling is active. */
   polling: boolean;
+  /** When true, the entire widget is read-only (recruiter demo). */
+  demoMode?: boolean;
+  /** Demo session id — sent as ``X-Session-Id`` on uploads when present. */
+  sessionId?: string | null;
 };
 
 export function UploadWidget({
   apiBaseUrl = DEFAULT_API,
   polling,
+  demoMode = false,
+  sessionId,
 }: UploadWidgetProps) {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -55,9 +62,12 @@ export function UploadWidget({
         formData.append("files", file);
       }
 
+      const headers: Record<string, string> = {};
+      if (sessionId) headers["X-Session-Id"] = sessionId;
       const res = await fetch(`${apiBaseUrl}/upload-invoices`, {
         method: "POST",
         body: formData,
+        headers,
       });
 
       if (!res.ok) {
@@ -105,53 +115,82 @@ export function UploadWidget({
         </div>
       </div>
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          accept=".pdf,application/pdf"
-          onChange={handleFileChange}
-          className="hidden"
-          id="invoice-upload-input"
-        />
-        <label
-          htmlFor="invoice-upload-input"
-          className="inline-flex cursor-pointer items-center gap-2 rounded-md bg-[#e6e8ea] px-4 py-2.5 text-sm font-semibold text-[#191c1e] hover:bg-[#dcdedf] transition-colors whitespace-nowrap"
+      {demoMode ? (
+        <div
+          className="flex flex-col gap-3 sm:flex-row sm:items-center"
+          title="Upload disabled in Demo Mode. Please review the pre-seeded discrepancy cases below."
+          aria-disabled="true"
         >
-          <Paperclip className="h-4 w-4" />
-          Select PDFs
-        </label>
-
-        <button
-          type="button"
-          onClick={() => void uploadFiles()}
-          disabled={selectedFiles.length === 0 || uploading || polling}
-          className="inline-flex items-center gap-2 rounded-md bg-gradient-to-r from-[#00502e] to-[#006b3f] px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap"
-        >
-          {uploading ? (
-            <>
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Uploading…
-            </>
-          ) : (
-            <>
-              <Upload className="h-4 w-4" />
-              Upload Selected Invoices
-            </>
-          )}
-        </button>
-
-        {selectedFiles.length > 0 && !uploading && (
+          <span
+            aria-disabled="true"
+            className="inline-flex items-center gap-2 rounded-md bg-[#e6e8ea] px-4 py-2.5 text-sm font-semibold text-slate-400 cursor-not-allowed whitespace-nowrap"
+          >
+            <Paperclip className="h-4 w-4" />
+            Select PDFs
+          </span>
           <button
             type="button"
-            onClick={clearSelection}
-            className="text-xs font-medium text-slate-500 hover:text-[#00502e] underline underline-offset-2"
+            disabled
+            aria-disabled="true"
+            className="inline-flex items-center gap-2 rounded-md bg-gradient-to-r from-[#00502e] to-[#006b3f] px-4 py-2.5 text-sm font-semibold text-white opacity-50 cursor-not-allowed whitespace-nowrap"
           >
-            Clear
+            <Upload className="h-4 w-4" />
+            Upload Selected Invoices
           </button>
-        )}
-      </div>
+          <p className="text-xs text-[#3f4941] italic">
+            Upload disabled in Demo Mode. Please review the pre-seeded
+            discrepancy cases below.
+          </p>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept=".pdf,application/pdf"
+            onChange={handleFileChange}
+            className="hidden"
+            id="invoice-upload-input"
+          />
+          <label
+            htmlFor="invoice-upload-input"
+            className="inline-flex cursor-pointer items-center gap-2 rounded-md bg-[#e6e8ea] px-4 py-2.5 text-sm font-semibold text-[#191c1e] hover:bg-[#dcdedf] transition-colors whitespace-nowrap"
+          >
+            <Paperclip className="h-4 w-4" />
+            Select PDFs
+          </label>
+
+          <button
+            type="button"
+            onClick={() => void uploadFiles()}
+            disabled={selectedFiles.length === 0 || uploading || polling}
+            className="inline-flex items-center gap-2 rounded-md bg-gradient-to-r from-[#00502e] to-[#006b3f] px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap"
+          >
+            {uploading ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Uploading…
+              </>
+            ) : (
+              <>
+                <Upload className="h-4 w-4" />
+                Upload Selected Invoices
+              </>
+            )}
+          </button>
+
+          {selectedFiles.length > 0 && !uploading && (
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="text-xs font-medium text-slate-500 hover:text-[#00502e] underline underline-offset-2"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      )}
 
       {selectedFiles.length > 0 && (
         <div className="mt-4 rounded-lg bg-[#f2f4f6] p-3">

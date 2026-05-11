@@ -16,6 +16,7 @@ from ai_worker.activities import (
     route_invoice_file_activity,
 )
 from ai_worker.llm_router import get_configured_lm
+from ai_worker.otel_scrubber import install_pii_scrubber
 from ai_worker.workflows import BatchReconciliationWorkflow
 
 logging.basicConfig(
@@ -35,6 +36,11 @@ async def main() -> None:
     # Initialise Langfuse (registers the global OTEL TracerProvider)
     # BEFORE instrumenting DSPy/LiteLLM so their spans use our exporter.
     get_client()
+    # Install PII redaction on the OTel pipeline AFTER Langfuse has set up
+    # the TracerProvider, but BEFORE any LLM call emits a span. The
+    # processor scrubs IBAN/SSN/EIN/NIP/card patterns from input/output
+    # attributes so raw invoice text never leaves our infrastructure.
+    install_pii_scrubber()
     DSPyInstrumentor().instrument()
     LiteLLMInstrumentor().instrument()
 

@@ -12,5 +12,15 @@ services:
   ai-worker:
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=/var/secrets/google/gcp-vertex-sa.json
+      # DEMO_MODE / PII_SCRUB_TELEMETRY are inherited from docker-compose.yml's
+      # `${DEMO_MODE:-false}` default. Re-declared here so the demo flag is
+      # visible alongside the Vertex-only secret mount.
+      - DEMO_MODE=${DEMO_MODE:-false}
+      - PII_SCRUB_TELEMETRY=${PII_SCRUB_TELEMETRY:-true}
     volumes:
       - ./secrets/gcp-vertex-sa.json:/var/secrets/google/gcp-vertex-sa.json:ro
+
+  api-gateway:
+    environment:
+      - DEMO_MODE=${DEMO_MODE:-false}
+      - DEMO_COOKIE_SECURE=${DEMO_COOKIE_SECURE:-false}

@@ -1,6 +1,13 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import {
+  GLOBAL_TENANT,
+  currentTenantId,
+  getOrInitDemoSession,
+  isDemoMode,
+  type DemoSession,
+} from "@/lib/demo";
 import type {
   DashboardStats,
   FinOpsDailyPoint,
@@ -22,6 +29,24 @@ export type {
   WorkflowResult,
 } from "@/types";
 
+/**
+ * Tenant-scoping helper for Prisma queries.
+ *
+ * - DEMO_MODE off → no filter (all rows visible to local dev).
+ * - DEMO_MODE on  → filter to the current cookie's sessionId. Rows from
+ *   other recruiters are never returned.
+ */
+async function tenantFilter(): Promise<{ sessionId?: string }> {
+  if (!isDemoMode()) return {};
+  const id = await currentTenantId();
+  return id === GLOBAL_TENANT ? { sessionId: GLOBAL_TENANT } : { sessionId: id };
+}
+
+export async function bootstrapDemoSession(): Promise<DemoSession | null> {
+  if (!isDemoMode()) return null;
+  return await getOrInitDemoSession();
+}
+
 export async function saveBatchResult(
   workflowId: string,
   resultData: WorkflowResult,
@@ -35,11 +60,14 @@ export async function saveBatchResult(
       ? "PARTIAL"
       : "MIXED";
 
+  const sessionId = await currentTenantId();
+
   try {
     const batch = await prisma.batch.create({
       data: {
         workflowId,
         status: batchStatus,
+        sessionId,
         invoices: {
           create: entries.map(([key, inv]) => ({
             invoiceId: inv.invoice_id ?? key,
@@ -68,10 +96,12 @@ export async function getRecentBatches(
 ): Promise<PaginatedBatches> {
   const safePage = Math.max(1, Math.floor(page));
   const safePageSize = Math.max(1, Math.floor(pageSize));
+  const where = await tenantFilter();
 
   const [totalCount, batches] = await Promise.all([
-    prisma.batch.count(),
+    prisma.batch.count({ where }),
     prisma.batch.findMany({
+      where,
       skip: (safePage - 1) * safePageSize,
       take: safePageSize,
       orderBy: { createdAt: "desc" },
@@ -86,11 +116,16 @@ export async function getRecentBatches(
 }
 
 export async function getDashboardStats(): Promise<DashboardStats> {
+  const where = await tenantFilter();
+
+  // Invoice rows don't carry sessionId directly — they belong to a Batch
+  // that does. groupBy on Invoice scoped via batch.is required.
   const [batchCount, grouped] = await Promise.all([
-    prisma.batch.count(),
+    prisma.batch.count({ where }),
     prisma.invoice.groupBy({
       by: ["status"],
       _count: { _all: true },
+      where: where.sessionId ? { batch: { sessionId: where.sessionId } } : undefined,
     }),
   ]);
 
@@ -125,6 +160,19 @@ export async function overrideInvoiceStatus(
   newStatus: OverrideStatus,
 ): Promise<OverrideResponse> {
   try {
+    // In demo mode, refuse to mutate an invoice that belongs to a different
+    // session. The composite check below is one round-trip more, but it's
+    // the only authoritative check (Prisma doesn't have RLS).
+    if (isDemoMode()) {
+      const sessionId = await currentTenantId();
+      const owned = await prisma.invoice.findFirst({
+        where: { id: invoiceId, batch: { sessionId } },
+        select: { id: true },
+      });
+      if (!owned) {
+        return { ok: false, error: "Invoice not found for this session." };
+      }
+    }
     await prisma.invoice.update({
       where: { id: invoiceId },
       data: { status: newStatus },
@@ -143,8 +191,9 @@ export async function clearAllBatches(): Promise<{
   error?: string;
 }> {
   try {
-    await prisma.invoice.deleteMany({});
-    await prisma.batch.deleteMany({});
+    const where = await tenantFilter();
+    // Deletes are scoped to the caller's session; cascading FK removes invoices.
+    await prisma.batch.deleteMany({ where });
     return { ok: true };
   } catch (err) {
     return {
@@ -154,8 +203,11 @@ export async function clearAllBatches(): Promise<{
   }
 }
 
-const API_GATEWAY_URL =
-  process.env.API_GATEWAY_URL ?? "http://localhost:8000";
+const API_GATEWAY_URL = (
+  process.env.NEXT_PUBLIC_API_URL ??
+  process.env.API_GATEWAY_URL ??
+  "http://localhost:8000"
+).replace(/\/$/, "");
 
 export async function getFinOpsTelemetry(
   days: number = 7,

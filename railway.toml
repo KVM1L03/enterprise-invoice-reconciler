@@ -1,0 +1,44 @@
+# Railway service config — API gateway (FastAPI).
+#
+# Railway models each service with its own railway.toml (or railway.json).
+# This file is consumed by the SERVICE whose "Root Directory" is set to "/"
+# in the Railway dashboard. The Next.js frontend has its own config at
+# frontend/railway.toml.
+#
+# The ai-worker (Temporal worker) runs the same Docker image with a
+# different startCommand. Create a separate Railway service, point it at
+# root "/", and override the start command per the snippet in docs/RAILWAY.md.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Railway injects $PORT — bind uvicorn to it. The 0.0.0.0 host is required
+# for the platform's reverse proxy to reach the container.
+startCommand = "uv run uvicorn api_gateway.main:app --host 0.0.0.0 --port $PORT"
+
+# /docs is FastAPI's Swagger UI — always 200 once the app boots. A
+# dedicated /healthz is the right long-term move; /docs is fine to ship.
+healthcheckPath = "/docs"
+healthcheckTimeout = 100
+
+# Backoff-restart instead of crashing the service on transient Temporal
+# disconnects — the FastAPI lifespan eagerly connects to Temporal at
+# startup, which can fail if the worker boots first.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+numReplicas = 1
+
+# Persistent volume mount.
+# IMPORTANT: Railway's volume *creation* is done via the dashboard
+# (Service → Settings → Volumes → New Volume → mount at /app/data) or
+# the Railway CLI (`railway volume create`). Once attached, the volume
+# persists /app/data across deploys. The DATA_DIR env var below tells
+# the app to put SQLite + PDFs there instead of the ephemeral repo root.
+#
+# Some Railway plans accept [[deploy.volumes]] in TOML directly:
+# [[deploy.volumes]]
+# mountPath = "/app/data"
+# Leave it commented unless your project supports it — dashboard config
+# is the canonical path and won't conflict with this file.

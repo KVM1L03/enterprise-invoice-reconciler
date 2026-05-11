@@ -59,10 +59,18 @@ def _sanity_check_invoice(invoice: InvoiceData) -> list[str]:
     return warnings
 
 
-class AgentState(TypedDict):
-    """State container for the reconciliation agent graph."""
+GLOBAL_TENANT = "global"
+
+
+class AgentState(TypedDict, total=False):
+    """State container for the reconciliation agent graph.
+
+    ``session_id`` scopes the ERP lookup. Defaults to "global" (local dev).
+    Demo sessions inject a ``demo_<uuid>`` value when invoking the graph.
+    """
 
     raw_text: str
+    session_id: str
     extracted_invoice: InvoiceData | None
     extraction_warnings: list[str]
     mcp_result: dict[str, object] | None
@@ -122,6 +130,8 @@ async def verify_with_erp(state: AgentState) -> dict[str, dict[str, object]]:
         msg = "Cannot verify: no extracted invoice in state"
         raise ValueError(msg)
 
+    session_id = state.get("session_id") or GLOBAL_TENANT
+
     with _langfuse.start_as_current_observation(
         as_type="span",
         name="verify_with_erp",
@@ -129,6 +139,7 @@ async def verify_with_erp(state: AgentState) -> dict[str, dict[str, object]]:
             "invoice_id": invoice.invoice_id,
             "amount": invoice.total_amount,
             "vendor_hash": _vendor_hash(invoice.vendor_name),
+            "session_id": session_id,
         },
     ) as span:
         server_params = StdioServerParameters(
@@ -144,6 +155,7 @@ async def verify_with_erp(state: AgentState) -> dict[str, dict[str, object]]:
                     arguments={
                         "invoice_id": invoice.invoice_id,
                         "amount": invoice.total_amount,
+                        "session_id": session_id,
                     },
                 )
 

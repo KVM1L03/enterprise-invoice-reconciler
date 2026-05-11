@@ -218,10 +218,13 @@ services:
       - TEMPORAL_ADDRESS=temporal:7233
       - LANGFUSE_BASE_URL=http://langfuse:3000
       - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://langfuse:3000/api/public/otel/v1/traces
+      - DEMO_MODE=${DEMO_MODE:-false}
+      - DEMO_COOKIE_SECURE=${DEMO_COOKIE_SECURE:-false}
     ports:
       - "8000:8000"
     volumes:
       - ./mock_data:/app/mock_data
+      - ./mcp_bridge/erp_mock.db:/app/mcp_bridge/erp_mock.db
     networks:
       - temporal-net
 
@@ -235,6 +238,10 @@ services:
       - TEMPORAL_ADDRESS=temporal:7233
       - LANGFUSE_BASE_URL=http://langfuse:3000
       - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://langfuse:3000/api/public/otel/v1/traces
+      - DEMO_MODE=${DEMO_MODE:-false}
+      # PII_SCRUB_TELEMETRY=true is the default; flip to "false" only for
+      # local debugging where you need raw prompts in Langfuse.
+      - PII_SCRUB_TELEMETRY=${PII_SCRUB_TELEMETRY:-true}
     volumes:
       - ./mock_data:/app/mock_data
       - ./mcp_bridge/erp_mock.db:/app/mcp_bridge/erp_mock.db

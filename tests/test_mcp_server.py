@@ -1,13 +1,11 @@
 """Tests for the verify_purchase_order MCP tool."""
 
 import sqlite3
-from pathlib import Path
 
 import pytest
 
 from mcp_bridge.server import verify_purchase_order
-
-DB_PATH = Path(__file__).resolve().parent.parent / "mcp_bridge" / "erp_mock.db"
+from shared.paths import ERP_DB_PATH as DB_PATH
 
 
 def _get_first_po() -> tuple[str, float]:
