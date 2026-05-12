@@ -148,9 +148,12 @@ export function UploadWidget({
               <span className="font-semibold text-[#00502e] whitespace-nowrap">
                 Scan &amp; Process Directory
               </span>{" "}
-              to automatically reconcile all five demo invoices—results stream
-              into the batch table below and each PDF is routed to approved or
-              discrepancy once processing finishes.
+              once to reconcile all five demo invoices. When the run finishes,
+              use{" "}
+              <span className="font-semibold text-[#00502e] whitespace-nowrap">
+                Create new demo session
+              </span>{" "}
+              for another pass (demo allows one scan per session).
             </p>
           </div>
         </div>

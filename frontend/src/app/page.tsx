@@ -25,74 +25,12 @@ import type {
 
 const PAGE_SIZE = 1;
 
-// NEXT_PUBLIC_API_URL is inlined at build time. Set it in Railway's frontend
-// service (e.g. https://api-gateway-production.up.railway.app); falls back to
-// localhost so local dev keeps working without extra config.
 const API =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "http://localhost:8000";
 const DEMO_MODE =
   (process.env.NEXT_PUBLIC_DEMO_MODE ?? "false").toLowerCase() === "true";
 
 const NO_INVOICES_PENDING = "NO_INVOICES_PENDING";
-
-/** Survives Next.js RSC refresh / remount after server actions (demo batch lock UX). */
-const DEMO_STORAGE_PREFIX = "enterprise_invoice_reconciler:demo:";
-
-function demoBatchDoneStorageKey(sessionId: string): string {
-  return `${DEMO_STORAGE_PREFIX}batch_done:${sessionId}`;
-}
-
-function demoQueueEmptyStorageKey(sessionId: string): string {
-  return `${DEMO_STORAGE_PREFIX}queue_empty:${sessionId}`;
-}
-
-function readDemoBatchDoneFromStorage(sessionId: string | null): boolean {
-  if (typeof window === "undefined" || !sessionId) return false;
-  try {
-    return window.sessionStorage.getItem(demoBatchDoneStorageKey(sessionId)) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function writeDemoBatchDoneToStorage(
-  sessionId: string | null,
-  done: boolean,
-): void {
-  if (typeof window === "undefined" || !sessionId) return;
-  try {
-    const key = demoBatchDoneStorageKey(sessionId);
-    if (done) window.sessionStorage.setItem(key, "1");
-    else window.sessionStorage.removeItem(key);
-  } catch {
-    /* quota / private mode */
-  }
-}
-
-function readDemoQueueEmptyFromStorage(sessionId: string | null): boolean {
-  if (typeof window === "undefined" || !sessionId) return false;
-  try {
-    return (
-      window.sessionStorage.getItem(demoQueueEmptyStorageKey(sessionId)) === "1"
-    );
-  } catch {
-    return false;
-  }
-}
-
-function writeDemoQueueEmptyToStorage(
-  sessionId: string | null,
-  empty: boolean,
-): void {
-  if (typeof window === "undefined" || !sessionId) return;
-  try {
-    const key = demoQueueEmptyStorageKey(sessionId);
-    if (empty) window.sessionStorage.setItem(key, "1");
-    else window.sessionStorage.removeItem(key);
-  } catch {
-    /* quota / private mode */
-  }
-}
 
 function reconcileBatchDetailCode(payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object") return undefined;
@@ -123,11 +61,15 @@ export default function DashboardPage() {
     null,
   );
   const [reviewTarget, setReviewTarget] = useState<ReviewTarget | null>(null);
-  const [demoBatchDoneLock, setDemoBatchDoneLock] = useState(false);
-  const [demoQueueEmpty, setDemoQueueEmpty] = useState(false);
+  /**
+   * Demo-only: after one directory batch the PDFs are moved; recruiters must
+   * mint a new session. Set as soon as COMPLETED is seen (before Prisma save)
+   * so the header cannot flash "Scan" again. No sessionStorage — keeps UX
+   * predictable for a disposable demo surface.
+   */
+  const [demoAwaitNewSession, setDemoAwaitNewSession] = useState(false);
   const [demoMinting, setDemoMinting] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  /** Latest session id for polling/startBatch closures (avoids stale null). */
   const demoSessionIdRef = useRef<string | null>(null);
   demoSessionIdRef.current = demoSessionId;
 
@@ -155,8 +97,6 @@ export default function DashboardPage() {
     void loadDashboard(1);
   }, [loadDashboard]);
 
-  // Demo bootstrap: mint or reuse the session_id cookie, then keep it in
-  // React state so client-side fetches can attach X-Session-Id.
   useEffect(() => {
     if (!DEMO_MODE) return;
     let cancelled = false;
@@ -172,30 +112,6 @@ export default function DashboardPage() {
       cancelled = true;
     };
   }, []);
-
-  // Hydrate from sessionStorage: promote only. Never assign false here — batch
-  // can finish before bootstrap sets demoSessionId; assigning false would wipe
-  // setDemoBatchDoneLock(true) from the poll handler (Railway race).
-  useEffect(() => {
-    if (!DEMO_MODE || !demoSessionId) return;
-    if (readDemoBatchDoneFromStorage(demoSessionId)) {
-      setDemoBatchDoneLock(true);
-    }
-    if (readDemoQueueEmptyFromStorage(demoSessionId)) {
-      setDemoQueueEmpty(true);
-    }
-  }, [demoSessionId]);
-
-  // Persist when SessionId appears after in-memory flags were set (same race).
-  useEffect(() => {
-    if (!DEMO_MODE || !demoSessionId || !demoBatchDoneLock) return;
-    writeDemoBatchDoneToStorage(demoSessionId, true);
-  }, [demoSessionId, demoBatchDoneLock]);
-
-  useEffect(() => {
-    if (!DEMO_MODE || !demoSessionId || !demoQueueEmpty) return;
-    writeDemoQueueEmptyToStorage(demoSessionId, true);
-  }, [demoSessionId, demoQueueEmpty]);
 
   const handlePageChange = useCallback(
     (page: number) => {
@@ -224,28 +140,24 @@ export default function DashboardPage() {
     if (!DEMO_MODE) return;
     setDemoMinting(true);
     setError(null);
-    const prevSessionId = demoSessionId;
     try {
       const session = await bootstrapFreshDemoSession();
       if (session) {
-        if (prevSessionId) {
-          writeDemoBatchDoneToStorage(prevSessionId, false);
-          writeDemoQueueEmptyToStorage(prevSessionId, false);
-        }
         setDemoSessionId(session.session_id);
-        setDemoBatchDoneLock(false);
-        setDemoQueueEmpty(false);
+        setDemoAwaitNewSession(false);
         await loadDashboard(1);
       }
     } catch (e) {
       console.error(e);
       setError(
-        e instanceof Error ? e.message : "Nie udało się odświeżyć sesji demo.",
+        e instanceof Error
+          ? e.message
+          : "Could not start a new demo session.",
       );
     } finally {
       setDemoMinting(false);
     }
-  }, [demoSessionId, loadDashboard]);
+  }, [loadDashboard]);
 
   const handleClearHistory = useCallback(async () => {
     if (
@@ -263,12 +175,8 @@ export default function DashboardPage() {
   }, [loadDashboard]);
 
   const startBatch = async () => {
+    if (DEMO_MODE && demoAwaitNewSession) return;
     setError(null);
-    setDemoQueueEmpty(false);
-    const sid = demoSessionIdRef.current;
-    if (DEMO_MODE && sid) {
-      writeDemoQueueEmptyToStorage(sid, false);
-    }
     setResult(null);
     setStatus(null);
     stopPolling();
@@ -294,11 +202,7 @@ export default function DashboardPage() {
           (code === NO_INVOICES_PENDING ||
             isLegacyNoPdfNotFound(payload, res.status))
         ) {
-          setDemoQueueEmpty(true);
-          const sidEmpty = demoSessionIdRef.current;
-          if (sidEmpty) {
-            writeDemoQueueEmptyToStorage(sidEmpty, true);
-          }
+          setDemoAwaitNewSession(true);
           return;
         }
         setError(`HTTP ${res.status}`);
@@ -324,16 +228,12 @@ export default function DashboardPage() {
         setStatus(data.status);
 
         if (data.status === "COMPLETED" && data.result) {
+          if (DEMO_MODE) setDemoAwaitNewSession(true);
           setResult(data.result);
           stopPolling();
           if (workflowId) {
             const saveRes = await saveBatchResult(workflowId, data.result);
             if (saveRes.ok) {
-              if (DEMO_MODE) {
-                const sid = demoSessionIdRef.current;
-                if (sid) writeDemoBatchDoneToStorage(sid, true);
-                setDemoBatchDoneLock(true);
-              }
               await loadDashboard(1);
               setResult(null);
             } else {
@@ -354,8 +254,9 @@ export default function DashboardPage() {
     return () => stopPolling();
   }, [polling, workflowId, stopPolling, loadDashboard]);
 
-  const demoHeaderBlocked =
-    DEMO_MODE && (demoBatchDoneLock || demoQueueEmpty);
+  const demoGateActive = DEMO_MODE && demoAwaitNewSession;
+  /* Header primary action is either “scan once” or “new session”; demo cannot chain scans. */
+  const demoPrimaryCreatesSession = demoGateActive;
 
   const resultEntries = result ? Object.values(result) : [];
   const liveApproved = resultEntries.filter((r) => r.status === "APPROVED").length;
@@ -395,15 +296,15 @@ export default function DashboardPage() {
           <button
             type="button"
             onClick={() =>
-              void (demoHeaderBlocked
+              void (demoPrimaryCreatesSession
                 ? handleFreshDemoSession()
                 : startBatch())
             }
-          disabled={
-            polling ||
-            demoMinting ||
-            (DEMO_MODE && !demoSessionId && !demoHeaderBlocked)
-          }
+            disabled={
+              polling ||
+              demoMinting ||
+              (DEMO_MODE && !demoSessionId && !demoGateActive)
+            }
             className="bg-gradient-to-r from-[#00502e] to-[#006b3f] text-white px-6 py-2.5 rounded-md text-sm font-semibold flex items-center gap-2 shadow-md hover:shadow-lg hover:brightness-[1.03] active:brightness-[0.98] cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:brightness-100 transition-all whitespace-nowrap"
           >
             {polling ? (
@@ -414,14 +315,10 @@ export default function DashboardPage() {
             ) : demoMinting ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Sesja demo…
+                Creating session…
               </>
-            ) : demoHeaderBlocked ? (
-              demoQueueEmpty ? (
-                <>Odśwież sesję demo</>
-              ) : (
-                <>Sesja zakończona — uruchom nową sesję demo</>
-              )
+            ) : demoPrimaryCreatesSession ? (
+              <>Create new demo session</>
             ) : (
               <>
                 <FolderOpen className="h-4 w-4" />
@@ -431,27 +328,21 @@ export default function DashboardPage() {
           </button>
         </header>
 
-        {DEMO_MODE && demoQueueEmpty ? (
+        {demoGateActive ? (
           <div
-            role="alert"
+            role="status"
             className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-[#3f3420]"
           >
             <p className="font-medium text-[#191c1e]">
-              Brak faktur do skanu — odśwież sesję demo.
+              Demo: this directory run is finished — PDFs were moved into
+              approved / discrepancy folders.
             </p>
             <p className="mt-2 leading-relaxed">
-              Pierwszy przebieg przenosi faktury do archiwum (approved /
-              discrepancy). Drugi przebieg wymaga nowego zestawu plików.
+              To run another batch you need fresh sample files. Use{" "}
+              <span className="font-semibold">Create new demo session</span>{" "}
+              (one batch per session; no repeat scans).
             </p>
           </div>
-        ) : null}
-
-        {DEMO_MODE && demoBatchDoneLock && !demoQueueEmpty ? (
-          <p className="mb-6 text-sm text-[#3f4941] max-w-3xl leading-relaxed">
-            Pierwszy przebieg przenosi faktury do archiwum (approved /
-            discrepancy). Drugi przebieg wymaga nowego zestawu plików — użyj
-            przycisku powyżej, aby uruchomić nową sesję demo.
-          </p>
         ) : null}
 
         <KPICards
