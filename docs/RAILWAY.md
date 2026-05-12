@@ -204,6 +204,11 @@ networking**, that every backend service resolves the **same**
 ``TEMPORAL_ADDRESS``, and Temporal listens on ``7233``. For Temporal Cloud instead,
 use the Cloud endpoint plus ``TEMPORAL_NAMESPACE`` / ``TEMPORAL_API_KEY`` (or mTLS).
 
+If ERP verification fails with SQLite ``no such table: purchase_orders`` while
+``/demo/init`` succeeds: the MCP bridge subprocess must inherit ``DATA_DIR``.
+``ai_worker/agent_graph.py`` passes ``env=dict(os.environ)`` into
+``StdioServerParameters`` — redeploy after pulling that fix.
+
 If the batch hangs in ``RUNNING`` after connect succeeds: check worker logs LLM /
 activity errors; Temporal env vars must match on gateway and worker.
 

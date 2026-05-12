@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import sys
 from typing import TypedDict
@@ -142,9 +143,14 @@ async def verify_with_erp(state: AgentState) -> dict[str, dict[str, object]]:
             "session_id": session_id,
         },
     ) as span:
+        # MCP stdio subprocess defaults to a curated env (PATH, HOME, …) —
+        # not the full ``os.environ``. Without ``DATA_DIR``, ``shared.paths``
+        # falls back to repo root and SQLite opens ``/app/mcp_bridge/erp_mock.db``
+        # instead of ``${DATA_DIR}/mcp_bridge/erp_mock.db`` (Railway volume).
         server_params = StdioServerParameters(
             command=sys.executable,
             args=["-m", "mcp_bridge.server"],
+            env=dict(os.environ),
         )
 
         async with stdio_client(server_params) as (read_stream, write_stream):
