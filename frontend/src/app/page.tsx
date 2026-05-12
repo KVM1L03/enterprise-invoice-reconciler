@@ -173,11 +173,29 @@ export default function DashboardPage() {
     };
   }, []);
 
+  // Hydrate from sessionStorage: promote only. Never assign false here — batch
+  // can finish before bootstrap sets demoSessionId; assigning false would wipe
+  // setDemoBatchDoneLock(true) from the poll handler (Railway race).
   useEffect(() => {
     if (!DEMO_MODE || !demoSessionId) return;
-    setDemoBatchDoneLock(readDemoBatchDoneFromStorage(demoSessionId));
-    setDemoQueueEmpty(readDemoQueueEmptyFromStorage(demoSessionId));
+    if (readDemoBatchDoneFromStorage(demoSessionId)) {
+      setDemoBatchDoneLock(true);
+    }
+    if (readDemoQueueEmptyFromStorage(demoSessionId)) {
+      setDemoQueueEmpty(true);
+    }
   }, [demoSessionId]);
+
+  // Persist when SessionId appears after in-memory flags were set (same race).
+  useEffect(() => {
+    if (!DEMO_MODE || !demoSessionId || !demoBatchDoneLock) return;
+    writeDemoBatchDoneToStorage(demoSessionId, true);
+  }, [demoSessionId, demoBatchDoneLock]);
+
+  useEffect(() => {
+    if (!DEMO_MODE || !demoSessionId || !demoQueueEmpty) return;
+    writeDemoQueueEmptyToStorage(demoSessionId, true);
+  }, [demoSessionId, demoQueueEmpty]);
 
   const handlePageChange = useCallback(
     (page: number) => {
@@ -381,7 +399,11 @@ export default function DashboardPage() {
                 ? handleFreshDemoSession()
                 : startBatch())
             }
-            disabled={polling || demoMinting}
+          disabled={
+            polling ||
+            demoMinting ||
+            (DEMO_MODE && !demoSessionId && !demoHeaderBlocked)
+          }
             className="bg-gradient-to-r from-[#00502e] to-[#006b3f] text-white px-6 py-2.5 rounded-md text-sm font-semibold flex items-center gap-2 shadow-md hover:shadow-lg hover:brightness-[1.03] active:brightness-[0.98] cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:brightness-100 transition-all whitespace-nowrap"
           >
             {polling ? (
