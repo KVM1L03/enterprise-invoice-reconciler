@@ -102,7 +102,8 @@ export async function mintFreshDemoSession(): Promise<DemoSession> {
   }
 
   const jar = await cookies();
-  jar.delete(DEMO_COOKIE, { path: "/" });
+  // Next.js 16+: delete accepts a single cookie descriptor (name + path).
+  jar.delete({ name: DEMO_COOKIE, path: "/" });
 
   const initRes = await fetch(`${API_GATEWAY_URL}/demo/init`, {
     method: "POST",
